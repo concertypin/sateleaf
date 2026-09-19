@@ -1,0 +1,19 @@
+{
+    "compilerOptions": {
+        "tsBuildInfoFile": "./node_modules/.cache/node.tsbuildinfo",
+        "lib": ["ESNext", "DOM", "DOM.Iterable"],
+        "types": ["vite/client", "@types/node"],
+        // Node doesn't support Typescript path mapping
+        "paths": {}
+    },
+    "include": [
+        "./*.ts",
+        "!./*.d.ts",
+        "./*.js",
+        "./*.mjs",
+        // dotfiles
+        "./.simple-git-hooks.mjs",
+        "scripts/**/*.ts"
+    ],
+    "extends": "./tsconfig.base.json"
+}

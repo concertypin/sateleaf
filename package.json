@@ -1,0 +1,39 @@
+{
+    "name": "sateleaf",
+    "type": "module",
+    "scripts": {
+        "format": "oxfmt --write .",
+        "format:check": "oxfmt --check .",
+        "lint": "pnpm run lint:oxlint --fix",
+        "lint:check": "pnpm run lint:oxlint",
+        "lint:oxlint": "oxlint -c oxlint.config.ts . --type-aware --type-check --report-unused-disable-directives-severity=error",
+        "postinstall": "pnpm run cf-typegen && simple-git-hooks",
+        "check": "pnpm run format && pnpm run lint && pnpm run test",
+        "test": "vitest run",
+        "dev": "vite dev",
+        "build": "vite build",
+        "start": "node dist/index.js"
+    },
+    "engines": {
+        "node": ">=22"
+    },
+    "dependencies": {
+        "@hono/node-server": "^2.1.1",
+        "hono": "^4.13.8"
+    },
+    "devDependencies": {
+        "@concertypin/config": "^0.3.0",
+        "@hono/vite-dev-server": "^0.26.1",
+        "@types/node": "^26.1.1",
+        "@vitest/coverage-v8": "^5.0.1",
+        "globals": "^17.12.0",
+        "oxfmt": "^0.68.0",
+        "oxlint": "^1.83.0",
+        "oxlint-tsgolint": "^7.0.2002",
+        "simple-git-hooks": "^2.14.0",
+        "tsx": "^4.23.0",
+        "typescript": "^7.0.2",
+        "vite": "^8.3.0",
+        "vitest": "^5.0.1"
+    }
+}

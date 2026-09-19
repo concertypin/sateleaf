@@ -1,0 +1,17 @@
+{
+    "[javascript][typescript]": {
+        "editor.defaultFormatter": "oxc.oxc-vscode",
+        "editor.tabSize": 4
+    },
+    "[github-actions-workflow][yaml]": {
+        "editor.defaultFormatter": "oxc.oxc-vscode",
+        "editor.tabSize": 2
+    },
+    "[json][jsonc]": {
+        "editor.defaultFormatter": "oxc.oxc-vscode"
+    },
+    "js/ts.preferences.preferTypeOnlyAutoImports": true,
+    "files.eol": "\n",
+    "js/ts.tsdk.path": "node_modules/typescript/lib",
+    "js/ts.experimental.useTsgo": false
+}
