@@ -1,11 +1,16 @@
 import type { Handler } from "hono";
-import { createUpstreamBody, RequestTooLargeError } from "./request.js";
+import {
+    createUpstreamBody,
+    InvalidRequestError,
+    RequestTooLargeError,
+} from "./request.js";
 import { hasValidProxySecret, parseProxyRoute } from "./route.js";
 
 const DEFAULT_MAX_REQUEST_BYTES = 26_214_400;
 
 /** Creates the catch-all handler that validates and forwards proxy requests. */
 export function createProxyHandler(): Handler {
+    const maxRequestBytes = configuredMaxRequestBytes();
     return async (context) => {
         if (context.req.method.toUpperCase() === "OPTIONS")
             return new Response(null, { status: 204 });
@@ -27,13 +32,10 @@ export function createProxyHandler(): Handler {
         route.upstream.search = new URL(context.req.url).search;
         const headers = createUpstreamHeaders(context.req.raw.headers);
         try {
-            const maxBytes = Number(
-                process.env.MAX_REQUEST_BYTES ?? DEFAULT_MAX_REQUEST_BYTES
-            );
             const upstreamBody = await createUpstreamBody(
                 context.req.raw,
                 route,
-                maxBytes
+                maxRequestBytes
             );
             if (upstreamBody.transformed)
                 headers.set("content-type", "application/json");
@@ -49,6 +51,8 @@ export function createProxyHandler(): Handler {
         } catch (error) {
             if (error instanceof RequestTooLargeError)
                 return errorResponse(413, error.message);
+            if (error instanceof InvalidRequestError)
+                return errorResponse(400, error.message);
             console.error(error);
             return errorResponse(
                 502,
@@ -58,6 +62,15 @@ export function createProxyHandler(): Handler {
             );
         }
     };
+}
+
+function configuredMaxRequestBytes(): number {
+    const raw = process.env.MAX_REQUEST_BYTES;
+    if (raw === undefined) return DEFAULT_MAX_REQUEST_BYTES;
+    const value = Number(raw);
+    if (!Number.isSafeInteger(value) || value <= 0)
+        throw new Error("MAX_REQUEST_BYTES must be a positive integer");
+    return value;
 }
 
 function createUpstreamHeaders(source: Headers): Headers {

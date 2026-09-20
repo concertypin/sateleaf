@@ -18,7 +18,27 @@ https://your-server.example/proxy/my-secret/mode_maximum,fontsize_1/generativela
 
 `settings` is a readable comma-separated list. It must not contain a dot. The compact form is `mode_maximum,fontsize_1` (also `mode_balanced`, `mode_marked`, and `mode_marked_combined`). The `mode=...` / `fontSize=...` spelling is also accepted.
 
-The endpoint is always HTTPS and omits the `https://` prefix. Its query string is supplied normally after the endpoint, for example `?alt=sse`. The incoming `Authorization: Bearer ...` is passed to the upstream unchanged.
+### Choosing a mode
+
+- `maximum`: Put the complete system instruction and conversation into one PDF. Use this when reducing the prompt's native text size is the priority.
+- `balanced`: Put the conversation into a PDF while keeping the system instruction as native Gemini text. Use this as the general-purpose compromise.
+- `marked`: Put only text inside `<pdf>...</pdf>` markers into PDFs; text outside the markers remains native. Use this when you need precise per-section control.
+- `marked_combined`: Like `marked`, but force every marked section into separate `root / PART n` PDF attachments, ignoring any `name=` attribute.
+
+In every mode, non-text parts such as images are preserved and generated PDFs are attached to the originating user turn. A source turn remains one Gemini content entry rather than being split into separate consecutive user entries.
+
+#### 모드 쉽게 고르기
+
+- `maximum`: 전체 대화와 시스템 지시를 PDF 하나로 접습니다. 네이티브 텍스트를 최대한 줄이고 싶을 때 사용합니다.
+- `balanced`: 대화는 PDF로 접고 시스템 지시는 네이티브 텍스트로 남깁니다. 일반적인 사용에 적합한 절충 모드입니다.
+- `marked`: `<pdf>...</pdf>` 안의 텍스트만 PDF로 접습니다. 필요한 부분만 선택하고 싶을 때 사용합니다.
+- `marked_combined`: `marked`와 같지만 각 marker를 별도의 `root / PART n` PDF 첨부파일로 만들고 `name=` 속성은 무시합니다.
+
+이미지 같은 미디어 파트는 모든 모드에서 유지되며, 생성된 PDF는 원래 user turn에 함께 첨부됩니다.
+
+The endpoint is always HTTPS and omits the `https://` prefix. Its query string is supplied normally after the endpoint, for example `?alt=sse`. The incoming `Authorization: Bearer ...` is passed to the upstream unchanged. Gemini API-key clients can send `x-goog-api-key` instead; request headers are forwarded to the selected upstream.
+
+For Gemini PDF-context verification, use a unique sentinel in the source text and ask the model to repeat it. A successful answer alone is useful, but `usageMetadata.promptTokensDetails` should also contain an `IMAGE` entry to confirm that Gemini processed the generated PDF modality.
 
 Supported transformed requests:
 
@@ -35,13 +55,14 @@ Generated PDFs are reused from an LRU cache in the operating system's temporary 
 
 ## CORS
 
-The proxy handles preflight itself. For a request with `Origin`, it reflects that origin, reflects requested headers, allows credentials, exposes all response headers, and adds `Vary: Origin`. Requests without an Origin receive `Access-Control-Allow-Origin: *`.
+The proxy handles preflight itself. For a request with `Origin`, it reflects that origin, reflects requested headers, allows credentials, exposes all response headers, and adds `Vary: Origin`. Requests without an `Origin` header receive no CORS headers.
 
 ## Heroku Eco
 
 ```sh
-npm install
-npm run check
+corepack enable
+pnpm install --frozen-lockfile
+pnpm check
 heroku create your-sateleaf
 heroku config:set PROXY_SECRET="a-long-readable-secret"
 git push heroku main

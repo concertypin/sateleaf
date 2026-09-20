@@ -19,6 +19,37 @@ test("enables PDF caching by default and accepts nocache", () => {
     );
 });
 
+test("rejects an oversized Gemini body before forwarding", async () => {
+    const upstreamFetch = vi.fn<() => undefined>();
+    vi.stubGlobal("fetch", upstreamFetch);
+    vi.stubEnv("PROXY_SECRET", "test-secret");
+    vi.stubEnv("MAX_REQUEST_BYTES", "4");
+    const app = new Hono().all("/*", createProxyHandler());
+
+    const response = await app.request(
+        "/proxy/test-secret/maximum/generativelanguage.googleapis.com/v1beta/models/gemini:generateContent",
+        { method: "POST", body: '{"contents":[]}' }
+    );
+
+    assert.equal(response.status, 413);
+    assert.equal(upstreamFetch.mock.calls.length, 0);
+});
+
+test("rejects malformed Gemini JSON without contacting the upstream", async () => {
+    const upstreamFetch = vi.fn<() => undefined>();
+    vi.stubGlobal("fetch", upstreamFetch);
+    vi.stubEnv("PROXY_SECRET", "test-secret");
+    const app = new Hono().all("/*", createProxyHandler());
+
+    const response = await app.request(
+        "/proxy/test-secret/maximum/generativelanguage.googleapis.com/v1beta/models/gemini:generateContent",
+        { method: "POST", body: "not json" }
+    );
+
+    assert.equal(response.status, 400);
+    assert.equal(upstreamFetch.mock.calls.length, 0);
+});
+
 test("relays SSE bodies without buffering or replacing upstream headers", async () => {
     const encoder = new TextEncoder();
     vi.stubGlobal(

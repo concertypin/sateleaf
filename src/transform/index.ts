@@ -6,9 +6,9 @@ export type JsonPrimitive = boolean | number | string | null;
 export type JsonValue = JsonPrimitive | JsonObject | JsonValue[];
 export type JsonObject = { [key: string]: JsonValue };
 
-type Message = { role: string; content: string };
+type Message = { role: string; content: string; sourceIndex?: number };
 type Packed = {
-    docs: { name: string; text: string }[];
+    docs: { name: string; text: string; sourceIndex?: number }[];
     native: Message[] | undefined;
     sys: string;
 };
@@ -89,6 +89,7 @@ function packed(messages: Message[], mode: Mode): Packed {
             name: string;
             part: number;
             chunks: Message[];
+            sourceIndex?: number;
         } | null = null;
         const counts = new Map<string, number>();
         const marker =
@@ -99,6 +100,9 @@ function packed(messages: Message[], mode: Mode): Packed {
                 docs.push({
                     name: active.name,
                     text: `===== PDF: ${active.name} / PART ${active.part} =====\n${serial(active.chunks)}`,
+                    ...(active.sourceIndex === undefined
+                        ? {}
+                        : { sourceIndex: active.sourceIndex }),
                 });
             }
             active = null;
@@ -126,7 +130,14 @@ function packed(messages: Message[], mode: Mode): Packed {
                     const part = (counts.get(name) ?? 0) + 1;
                     counts.set(name, part);
                     nativeText += `[Use attached PDF section ${name} part ${part} here.]`;
-                    active = { name, part, chunks: [] };
+                    active = {
+                        name,
+                        part,
+                        chunks: [],
+                        ...(message.sourceIndex === undefined
+                            ? {}
+                            : { sourceIndex: message.sourceIndex }),
+                    };
                 }
                 offset = match.index + match[0].length;
             }
@@ -135,7 +146,13 @@ function packed(messages: Message[], mode: Mode): Packed {
                 active.chunks.push({ role: message.role, content: tail });
             else nativeText += tail;
             if (nativeText.trim())
-                native.push({ role: message.role, content: nativeText });
+                native.push({
+                    role: message.role,
+                    content: nativeText,
+                    ...(message.sourceIndex === undefined
+                        ? {}
+                        : { sourceIndex: message.sourceIndex }),
+                });
         }
         finish();
         return { docs, native, sys: docs.length ? directive : "" };
@@ -151,13 +168,16 @@ async function pdfPayload(
     payload: Packed,
     size: number,
     useCache: boolean
-): Promise<{ name: string; data: string }[]> {
+): Promise<{ name: string; data: string; sourceIndex?: number }[]> {
     return Promise.all(
         payload.docs
             .filter((document) => document.text)
             .map(async (document) => ({
                 name: document.name,
                 data: await transcriptPdfBase64(document.text, size, useCache),
+                ...(document.sourceIndex === undefined
+                    ? {}
+                    : { sourceIndex: document.sourceIndex }),
             }))
     );
 }
@@ -192,31 +212,69 @@ export async function transformGemini(
         ? text(body.systemInstruction.parts)
         : "";
     if (instruction) messages.push({ role: "system", content: instruction });
-    for (const content of source) {
+    for (const [sourceIndex, content] of source.entries()) {
         const value = text(content.parts);
         if (value)
             messages.push({
                 role: content.role === "model" ? "assistant" : "user",
                 content: value,
+                sourceIndex,
             });
     }
     const payload = packed(messages, mode);
     const pdfs = await pdfPayload(payload, size, useCache);
-    const parts: JsonValue[] = pdfs.map((document) => ({
-        inlineData: { mimeType: "application/pdf", data: document.data },
-    }));
-    for (const content of source) {
+    const pdfPartsBySource = new Map<number, JsonValue[]>();
+    const unassignedPdfParts: JsonValue[] = [];
+    for (const document of pdfs) {
+        const part = {
+            inlineData: { mimeType: "application/pdf", data: document.data },
+        };
+        if (document.sourceIndex === undefined) unassignedPdfParts.push(part);
+        else
+            pdfPartsBySource.set(document.sourceIndex, [
+                ...(pdfPartsBySource.get(document.sourceIndex) ?? []),
+                part,
+            ]);
+    }
+    const nativeTextBySource = new Map<number, string>();
+    for (const message of payload.native ?? []) {
+        if (message.sourceIndex !== undefined && message.role !== "system")
+            nativeTextBySource.set(message.sourceIndex, message.content);
+    }
+    const contents: JsonObject[] = [];
+    for (const [sourceIndex, content] of source.entries()) {
+        const parts: JsonValue[] = [];
+        const nativeText = nativeTextBySource.get(sourceIndex);
+        if (nativeText) parts.push({ text: nativeText });
         if (Array.isArray(content.parts))
             parts.push(...content.parts.filter((part) => !hasTextPart(part)));
+        const pdfParts = pdfPartsBySource.get(sourceIndex) ?? [];
+        if (pdfParts.length && content.role !== "model")
+            parts.push(...pdfParts);
+        if (parts.length)
+            contents.push({
+                role: content.role === "model" ? "model" : "user",
+                parts,
+            });
     }
-    const contents: JsonObject[] =
-        payload.native
-            ?.filter((message) => message.role !== "system")
-            .map((message) => ({
-                role: message.role === "assistant" ? "model" : "user",
-                parts: [{ text: message.content }],
-            })) ?? [];
-    if (parts.length) contents.push({ role: "user", parts });
+    if (unassignedPdfParts.length) {
+        const lastUser = [...contents]
+            .reverse()
+            .find((content) => content.role === "user");
+        if (lastUser && Array.isArray(lastUser.parts))
+            lastUser.parts.push(...unassignedPdfParts);
+        else contents.push({ role: "user", parts: unassignedPdfParts });
+    }
+    for (const [sourceIndex, pdfParts] of pdfPartsBySource) {
+        if (
+            source.some(
+                (content, index) =>
+                    index === sourceIndex && content.role !== "model"
+            )
+        )
+            continue;
+        contents.push({ role: "user", parts: pdfParts });
+    }
     const generationConfig: JsonObject = isJsonObject(body.generationConfig)
         ? { ...body.generationConfig }
         : {};

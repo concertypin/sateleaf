@@ -1,12 +1,15 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
+    chmod,
+    lstat,
     mkdir,
-    open,
     readdir,
     readFile,
+    rename,
     rm,
     stat,
     utimes,
+    writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -18,6 +21,7 @@ const MAX_CACHE_ENTRIES = 64;
 const MAX_CACHE_BYTES = 32 * 1024 * 1024;
 const MAX_ENTRY_BYTES = 8 * 1024 * 1024;
 const CACHE_TTL_MS = 10 * 60 * 1000;
+let cacheMutationQueue = Promise.resolve();
 
 /**
  * Returns a deterministic PDF encoding, optionally reusing a bounded temporary
@@ -31,38 +35,57 @@ export async function transcriptPdfBase64(
 ): Promise<string> {
     if (!useCache)
         return Buffer.from(
-            generateTranscriptPdf(transcript, fontSize).bytes
+            (await generateTranscriptPdf(transcript, fontSize)).bytes
         ).toString("base64");
 
     const key = cacheKey(transcript, fontSize);
     const path = join(CACHE_DIRECTORY, `${key}.pdf`);
     const now = new Date();
+    let cacheAvailable = false;
     try {
+        await ensureCacheDirectory();
+        cacheAvailable = true;
         const cached = await readFreshEntry(path, now.getTime());
         if (cached) {
-            await utimes(path, now, now);
+            try {
+                await utimes(path, now, now);
+            } catch {
+                // A valid PDF remains reusable when only LRU metadata fails.
+            }
             return cached.toString("base64");
         }
     } catch {
         // A cache miss or unavailable temporary directory must not fail a request.
     }
 
-    const pdf = Buffer.from(generateTranscriptPdf(transcript, fontSize).bytes);
-    if (pdf.byteLength <= MAX_ENTRY_BYTES) {
+    const pdf = Buffer.from(
+        (await generateTranscriptPdf(transcript, fontSize)).bytes
+    );
+    if (cacheAvailable && pdf.byteLength <= MAX_ENTRY_BYTES) {
+        const temporaryPath = join(
+            CACHE_DIRECTORY,
+            `${key}.${randomUUID()}.tmp`
+        );
         try {
-            await mkdir(CACHE_DIRECTORY, { recursive: true, mode: 0o700 });
-            await evictEntries(now.getTime(), pdf.byteLength);
-            const file = await open(path, "w", 0o600);
-            try {
-                await file.writeFile(pdf);
-            } finally {
-                await file.close();
-            }
+            await queueCacheWrite(path, temporaryPath, pdf, now.getTime());
         } catch {
             // PDF generation remains useful even when caching is unavailable.
+        } finally {
+            await rm(temporaryPath, { force: true }).catch(() => undefined);
         }
     }
     return pdf.toString("base64");
+}
+
+async function ensureCacheDirectory(): Promise<void> {
+    await mkdir(CACHE_DIRECTORY, { recursive: true, mode: 0o700 });
+    const metadata = await lstat(CACHE_DIRECTORY);
+    if (!metadata.isDirectory() || metadata.isSymbolicLink())
+        throw new Error("Unsafe PDF cache directory");
+    const userId = process.getuid?.();
+    if (userId !== undefined && metadata.uid !== userId)
+        throw new Error("PDF cache directory has an unexpected owner");
+    await chmod(CACHE_DIRECTORY, 0o700);
 }
 
 function cacheKey(transcript: string, fontSize: number): string {
@@ -80,12 +103,39 @@ async function readFreshEntry(
     path: string,
     now: number
 ): Promise<Buffer | undefined> {
-    const metadata = await stat(path);
-    if (now - metadata.mtimeMs > CACHE_TTL_MS) {
+    const metadata = await lstat(path);
+    if (
+        !metadata.isFile() ||
+        metadata.isSymbolicLink() ||
+        metadata.size <= 0 ||
+        metadata.size > MAX_ENTRY_BYTES ||
+        now - metadata.mtimeMs > CACHE_TTL_MS
+    ) {
         await rm(path, { force: true });
         return undefined;
     }
     return readFile(path);
+}
+
+function queueCacheWrite(
+    path: string,
+    temporaryPath: string,
+    pdf: Buffer,
+    now: number
+): Promise<void> {
+    const operation = cacheMutationQueue.then(async () => {
+        await evictEntries(now, pdf.byteLength);
+        await writeFile(temporaryPath, pdf, { flag: "wx", mode: 0o600 });
+        await rename(temporaryPath, path);
+    });
+    cacheMutationQueue = operation.catch(() => undefined);
+    return operation;
+}
+
+function isMissingFileError(
+    error: unknown
+): error is Error & { code: "ENOENT" } {
+    return error instanceof Error && "code" in error && error.code === "ENOENT";
 }
 
 async function evictEntries(now: number, incomingBytes: number): Promise<void> {
@@ -95,13 +145,20 @@ async function evictEntries(now: number, incomingBytes: number): Promise<void> {
             .filter((name) => name.endsWith(".pdf"))
             .map(async (name) => {
                 const path = join(CACHE_DIRECTORY, name);
-                const metadata = await stat(path);
-                return {
-                    path,
-                    bytes: metadata.size,
-                    modifiedAt: metadata.mtimeMs,
-                };
+                try {
+                    const metadata = await stat(path);
+                    return {
+                        path,
+                        bytes: metadata.size,
+                        modifiedAt: metadata.mtimeMs,
+                    };
+                } catch (error) {
+                    if (isMissingFileError(error)) return undefined;
+                    throw error;
+                }
             })
+    ).then((candidates) =>
+        candidates.filter((candidate) => candidate !== undefined)
     );
 
     let totalBytes = entries.reduce((total, entry) => total + entry.bytes, 0);

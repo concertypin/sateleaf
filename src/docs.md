@@ -20,11 +20,22 @@ The proxy-secret must equal the server's PROXY_SECRET environment variable. The 
 
 Settings are readable comma-separated values:
 
-- mode_maximum: fold the complete conversation into one PDF.
-- mode_balanced: keep system instructions as native text and fold the rest.
-- mode_marked: fold only <pdf>...</pdf> sections.
-- mode_marked_combined: fold marked sections into one PDF group.
+- mode_maximum: fold the complete system instruction and conversation into one PDF. Choose this when minimizing native prompt text matters most.
+- mode_balanced: fold the conversation into a PDF but keep the system instruction as native Gemini text. This is the general-purpose compromise.
+- mode_marked: fold only text inside `<pdf>...</pdf>` markers; text outside remains native. Choose this for precise per-section control.
+- mode_marked_combined: like `mode_marked`, but emit separate `root / PART n` PDF attachments for each marked section and ignore any `name=` attribute.
 - fontsize_1: PDF font size. Any positive value up to 12 is accepted.
+
+Non-text parts such as images are preserved in every mode, and generated PDFs are attached to the originating user turn. A source turn remains one Gemini content entry.
+
+### 모드 선택 가이드
+
+- `maximum`: 전체 대화와 시스템 지시를 PDF 하나로 변환합니다. 네이티브 텍스트를 가장 많이 줄이는 모드입니다.
+- `balanced`: 대화만 PDF로 변환하고 시스템 지시는 네이티브 텍스트로 유지합니다. 기본 절충안으로 사용하기 좋습니다.
+- `marked`: `<pdf>...</pdf>` 내부만 PDF로 변환합니다. 특정 구간만 변환할 때 사용합니다.
+- `marked_combined`: 각 marker 구간을 별도의 `root / PART n` PDF 첨부파일로 만들고 `name=` 속성은 무시합니다.
+
+이미지 등 미디어 파트는 모든 모드에서 유지되고 PDF는 원래 user turn에 병합됩니다.
 
 The equals spelling (mode=maximum,fontSize=1) is accepted too, but the underscore spelling is intended for base-URL-only clients. Add `nocache` to bypass the local PDF cache for a request.
 
@@ -53,7 +64,7 @@ Other methods and paths are passed through without PDF transformation. Upstream 
 
 ## CORS
 
-OPTIONS is answered locally with a preflight response. When an Origin header is present, it is reflected in Access-Control-Allow-Origin; requested headers are reflected, credentials are allowed, and Vary: Origin is added. Requests without an origin receive Access-Control-Allow-Origin: *.
+OPTIONS is answered locally with a preflight response. When an Origin header is present, it is reflected in Access-Control-Allow-Origin; requested headers are reflected, credentials are allowed, and Vary: Origin is added. Requests without an Origin header receive no CORS headers.
 
 ## Environment
 
@@ -67,8 +78,9 @@ PORT is supplied by Heroku automatically. The app has no fixed upstream environm
 ## Heroku
 
 ```sh
-npm install
-npm run check
+corepack enable
+pnpm install --frozen-lockfile
+pnpm check
 heroku create your-sateleaf
 heroku config:set PROXY_SECRET="a-long-readable-secret"
 git push heroku main

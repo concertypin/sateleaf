@@ -5,18 +5,19 @@ All agents, such as Claude Code, should keep `**/AGENTS.md` in mind.
 
 ## Project Type
 
-This is a **Hono backend server template** for Cloudflare Workers. It provides a minimal setup for building API servers with Hono, including:
+This is a **Hono/Node HTTPS reverse proxy** that converts native Gemini text context into PDF attachments before forwarding requests. It includes:
 
-- Zod validation
-- Vitest with Cloudflare worker pool for testing
+- Dynamic HTTPS upstream routing protected by `PROXY_SECRET`
+- Deterministic PDF generation with an OS temporary-file cache
+- Vitest running in the Node environment
 
 ## Development Commands
 
 ```bash
-# Start development server (wrangler)
+# Start development server (Vite)
 pnpm dev
 
-# Build for production (Cloudflare Workers)
+# Build the Node server for production
 pnpm build
 
 # Format code
@@ -29,22 +30,13 @@ pnpm lint
 pnpm test
 ```
 
-## Using This Template in a New Project
+## Runtime Contracts
 
-When you copy or generate a new project from this template:
-
-1. Replace the template identity in `package.json` with your project name, repository URL, author, and license.
-2. Review `wrangler.jsonc` and set the Cloudflare Worker name, compatibility options, and environment bindings for the new project.
-3. Update `README.md` and `AGENTS.md` so the first screen describes the new app instead of the template.
-4. Review `src/utils/cors.ts` and adjust CORS settings if needed. The current setup allows as much as possible.
-
-Immediately after creating a project from this template, upgrade all dependencies and refresh the lockfile:
-
-```bash
-pnpm up --latest
-```
-
-Run the project's format, lint, test, and build checks after the upgrade and resolve every resulting error before continuing development.
+- `PROXY_SECRET` is required; requests are rejected when it is absent.
+- `MAX_REQUEST_BYTES` limits native Gemini request bodies transformed into PDFs.
+- `PORT` defaults to `3000` in production.
+- `nocache` must bypass all PDF-cache filesystem access.
+- Proxy responses may be SSE streams and must not be buffered.
 
 ## Coding Standards
 
@@ -57,8 +49,3 @@ See `docs/rules/` for TypeScript, testing, and tooling guidelines.
 ## Package Manager
 
 This project uses pnpm.
-
-## Cloudflare Workers
-
-This template uses `wrangler` for Cloudflare Workers development and deployment.
-Configuration is in `wrangler.jsonc`.

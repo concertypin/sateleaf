@@ -1,11 +1,9 @@
-import { deflateSync } from "node:zlib";
-
 const PAGE_WIDTH = 595.28;
 const PAGE_HEIGHT = 841.89;
 const textEncoder = new TextEncoder();
 
 /** Encodes PDF syntax and text as UTF-8 bytes. */
-function encodeText(value: string): Uint8Array {
+function encodeText(value: string): Uint8Array<ArrayBuffer> {
     return textEncoder.encode(value);
 }
 
@@ -76,9 +74,17 @@ function requireCharacterId(
     return id;
 }
 
-/** Wraps deflated bytes in a PDF stream object. */
-function createCompressedStream(data: Uint8Array): Uint8Array {
-    const compressed = new Uint8Array(deflateSync(data));
+/** Wraps CompressionStream output in a PDF stream object. */
+async function createCompressedStream(
+    data: Uint8Array<ArrayBuffer>
+): Promise<Uint8Array> {
+    const body = new Response(data).body;
+    if (!body) throw new Error("Unable to create compression stream");
+    const compressed = new Uint8Array(
+        await new Response(
+            body.pipeThrough(new CompressionStream("deflate"))
+        ).arrayBuffer()
+    );
     return concatBytes([
         encodeText(
             `<< /Length ${compressed.length} /Filter /FlateDecode >>\nstream\n`
@@ -141,11 +147,11 @@ export interface TranscriptPdf {
  * Newlines are stored as literal `\\n` markers so models can reconstruct the
  * original text after reading the PDF text layer.
  */
-export function generateTranscriptPdf(
+export async function generateTranscriptPdf(
     transcript: string,
     fontSize = 1,
     margin = 0
-): TranscriptPdf {
+): Promise<TranscriptPdf> {
     if (
         !Number.isFinite(fontSize) ||
         fontSize <= 0 ||
@@ -214,7 +220,7 @@ export function generateTranscriptPdf(
         encodeText(
             "<< /Type /FontDescriptor /FontName /PMUnicode /Flags 4 /FontBBox [0 -200 1000 800] /ItalicAngle 0 /Ascent 800 /Descent -200 /CapHeight 700 /StemV 80 /MissingWidth 500 >>"
         ),
-        createCompressedStream(unicodeMap),
+        await createCompressedStream(unicodeMap),
     ];
 
     for (const [index, page] of pages.entries()) {
@@ -242,7 +248,7 @@ export function generateTranscriptPdf(
             encodeText(
                 `<< /Type /Page /Parent 2 0 R /Contents ${pageId + 1} 0 R >>`
             ),
-            createCompressedStream(encodeText(commands.join("\n")))
+            await createCompressedStream(encodeText(commands.join("\n")))
         );
     }
 

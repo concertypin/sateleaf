@@ -1,13 +1,17 @@
 {
     "name": "sateleaf",
+    "description": "PDF-folding HTTPS reverse proxy for native Gemini requests",
+    "license": "MIT",
+    "private": true,
     "type": "module",
+    "packageManager": "pnpm@10.33.2",
     "scripts": {
         "format": "oxfmt --write .",
         "format:check": "oxfmt --check .",
         "lint": "pnpm run lint:oxlint --fix",
         "lint:check": "pnpm run lint:oxlint",
         "lint:oxlint": "oxlint -c oxlint.config.ts . --type-aware --type-check --report-unused-disable-directives-severity=error",
-        "postinstall": "pnpm run cf-typegen && simple-git-hooks",
+        "postinstall": "simple-git-hooks",
         "check": "pnpm run format && pnpm run lint && pnpm run test",
         "test": "vitest run",
         "dev": "vite dev",
