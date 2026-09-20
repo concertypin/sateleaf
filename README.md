@@ -1,73 +1,495 @@
 # Sateleaf
 
-Hono/Node reverse proxy inspired by PageFold. The upstream is selected per URL, so changing providers does not require a redeploy.
+A PDF-folding HTTPS reverse proxy for native Gemini requests.
 
-Usage documentation is also served as Markdown at `/docs`.
+Sateleaf sits between a client and a Gemini-compatible HTTPS upstream, converts long text context into PDF attachments, and forwards the transformed request upstream.
 
-## URL format
+For the common `maximum` and `balanced` modes, **no prompt modification is required**. Clients can send ordinary Gemini requests as-is. `<pdf>...</pdf>` markers are only needed when using the `marked` modes.
+
+Inspired by PageFold.
+
+## Features
+
+- PDF folding for native Gemini requests
+- No prompt changes required for `maximum` or `balanced`
+- Optional `<pdf>...</pdf>` markers for selective folding
+- Dynamic HTTPS upstream routing
+- Transparent pass-through for unsupported paths and methods
+- Streaming-safe Gemini SSE forwarding
+- Deterministic PDF generation
+- Bounded local PDF cache with per-request bypass
+- Preservation of non-text parts such as images
+- CORS support
+- No database or persistent storage required
+
+## How it works
+
+```mermaid
+flowchart LR
+    Client["Client"]
+
+    subgraph Sateleaf
+        Auth["Authenticate proxy URL"]
+        Settings["Parse folding settings"]
+        Transform["Transform Gemini text context"]
+        PDF["Generate / reuse PDF attachments"]
+        Forward["Forward HTTPS request"]
+    end
+
+    Upstream["Gemini / HTTPS upstream"]
+
+    Client --> Auth
+    Auth --> Settings
+    Settings --> Transform
+    Transform --> PDF
+    PDF --> Forward
+    Forward --> Upstream
+    Upstream -->|"Response / SSE stream"| Client
+```
+
+Supported Gemini `generateContent` requests are transformed according to the selected mode.
+
+Requests that do not match a supported transformation path are forwarded transparently.
+
+## Folding modes
+
+Sateleaf supports four folding modes.
+
+For most clients, use `balanced` or `maximum`. These modes work with normal Gemini prompts and require no special tags.
+
+| Mode              | Prompt modification required? | Behavior                                                       |
+| ----------------- | ----------------------------- | -------------------------------------------------------------- |
+| `maximum`         | No                            | Folds the complete system instruction and conversation         |
+| `balanced`        | No                            | Keeps the system instruction native and folds the conversation |
+| `marked`          | Yes                           | Folds only text inside `<pdf>...</pdf>`                        |
+| `marked_combined` | Yes                           | Folds each marked section into a separate PDF                  |
+
+### `maximum`
 
 ```text
-https://your-server.example/proxy/{proxy-secret}/{settings}/{upstream-host-and-path}
+mode_maximum
+```
+
+Folds the complete system instruction and conversation into PDF context.
+
+The client can send an ordinary Gemini request:
+
+```json
+{
+    "contents": [
+        {
+            "role": "user",
+            "parts": [
+                {
+                    "text": "A very long prompt..."
+                }
+            ]
+        }
+    ]
+}
+```
+
+No `<pdf>` marker is required.
+
+Use this mode when minimizing native Gemini text is the main goal.
+
+### `balanced`
+
+```text
+mode_balanced
+```
+
+Folds conversation text into PDF context while keeping the system instruction as native Gemini text.
+
+No prompt modification or marker is required.
+
+This is the general-purpose mode when you want to preserve the system instruction as native text while folding the conversation.
+
+### `marked`
+
+```text
+mode_marked
+```
+
+Only text explicitly wrapped in `<pdf>...</pdf>` is folded.
+
+```xml
+This remains native text.
+
+<pdf>
+This section becomes PDF context.
+</pdf>
+
+This remains native text too.
+```
+
+Use this mode when individual sections of a prompt need different treatment.
+
+If no `<pdf>` marker is present, there is no marked text to fold.
+
+### `marked_combined`
+
+```text
+mode_marked_combined
+```
+
+Works like `marked`, but each marked section becomes a separate PDF attachment:
+
+```text
+root / PART 1
+root / PART 2
+root / PART 3
+...
+```
+
+Any marker `name=` attribute is ignored in this mode.
+
+## Requirements
+
+- Node.js 22 or newer
+- pnpm 10
+
+The repository currently pins:
+
+```text
+pnpm@10.33.2
+```
+
+## Quick start
+
+```sh
+git clone https://github.com/concertypin/sateleaf.git
+cd sateleaf
+
+corepack enable
+pnpm install --frozen-lockfile
+```
+
+Set a proxy secret:
+
+```sh
+export PROXY_SECRET="a-long-readable-secret"
+```
+
+Optionally configure the maximum accepted request size:
+
+```sh
+export MAX_REQUEST_BYTES=26214400
+```
+
+Start the development server:
+
+```sh
+pnpm dev
+```
+
+For production:
+
+```sh
+pnpm build
+pnpm start
+```
+
+The production server listens on `PORT`, or `3000` when `PORT` is not set.
+
+## Basic endpoints
+
+Health and status:
+
+```text
+GET /
+GET /health
+```
+
+Runtime usage documentation:
+
+```text
+GET /docs
+```
+
+`/docs` returns Markdown.
+
+## Proxy URL
+
+Requests use the following format:
+
+```text
+https://your-sateleaf.example/proxy/{proxy-secret}/{settings}/{upstream-host-and-path}
 ```
 
 Example:
 
 ```text
-https://your-server.example/proxy/my-secret/mode_maximum,fontsize_1/generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent
+https://your-sateleaf.example/proxy/my-secret/mode_balanced,fontsize_1/generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent
 ```
 
-`settings` is a readable comma-separated list. It must not contain a dot. The compact form is `mode_maximum,fontsize_1` (also `mode_balanced`, `mode_marked`, and `mode_marked_combined`). The `mode=...` / `fontSize=...` spelling is also accepted.
+The upstream portion must not include `https://`. Sateleaf prepends HTTPS automatically.
 
-### Choosing a mode
+Query parameters are appended normally:
 
-- `maximum`: Put the complete system instruction and conversation into one PDF. Use this when reducing the prompt's native text size is the priority.
-- `balanced`: Put the conversation into a PDF while keeping the system instruction as native Gemini text. Use this as the general-purpose compromise.
-- `marked`: Put only text inside `<pdf>...</pdf>` markers into PDFs; text outside the markers remains native. Use this when you need precise per-section control.
-- `marked_combined`: Like `marked`, but force every marked section into separate `root / PART n` PDF attachments, ignoring any `name=` attribute.
+```text
+.../generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:streamGenerateContent?alt=sse
+```
 
-In every mode, non-text parts such as images are preserved and generated PDFs are attached to the originating user turn. A source turn remains one Gemini content entry rather than being split into separate consecutive user entries.
+The settings segment must not contain a dot (`.`). Dots are reserved for the upstream host and path portion.
 
-#### 모드 쉽게 고르기
+## Settings
 
-- `maximum`: 전체 대화와 시스템 지시를 PDF 하나로 접습니다. 네이티브 텍스트를 최대한 줄이고 싶을 때 사용합니다.
-- `balanced`: 대화는 PDF로 접고 시스템 지시는 네이티브 텍스트로 남깁니다. 일반적인 사용에 적합한 절충 모드입니다.
-- `marked`: `<pdf>...</pdf>` 안의 텍스트만 PDF로 접습니다. 필요한 부분만 선택하고 싶을 때 사용합니다.
-- `marked_combined`: `marked`와 같지만 각 marker를 별도의 `root / PART n` PDF 첨부파일로 만들고 `name=` 속성은 무시합니다.
+Settings are comma-separated:
 
-이미지 같은 미디어 파트는 모든 모드에서 유지되며, 생성된 PDF는 원래 user turn에 함께 첨부됩니다.
+```text
+mode_balanced,fontsize_1
+```
 
-The endpoint is always HTTPS and omits the `https://` prefix. Its query string is supplied normally after the endpoint, for example `?alt=sse`. The incoming `Authorization: Bearer ...` is passed to the upstream unchanged. Gemini API-key clients can send `x-goog-api-key` instead; request headers are forwarded to the selected upstream.
+Equals-style syntax is also accepted:
 
-For Gemini PDF-context verification, use a unique sentinel in the source text and ask the model to repeat it. A successful answer alone is useful, but `usageMetadata.promptTokensDetails` should also contain an `IMAGE` entry to confirm that Gemini processed the generated PDF modality.
+```text
+mode=balanced,fontSize=1
+```
 
-Supported transformed requests:
+The underscore form is convenient for clients that only support a fixed base URL.
 
-- Gemini native `POST .../models/:model:generateContent`
-- Gemini native streaming `POST .../models/:model:streamGenerateContent?alt=sse`
+### Font size
 
-Other paths and methods are transparent pass-throughs.
+```text
+fontsize_1
+```
+
+Any positive value up to `12` is accepted.
+
+### Disable caching
+
+Add `nocache`:
+
+```text
+mode_balanced,fontsize_1,nocache
+```
+
+This skips all PDF-cache filesystem access for that request.
+
+## Gemini example
+
+The request body does not need any special Sateleaf syntax when using `balanced` or `maximum`.
+
+```sh
+curl \
+  -X POST \
+  -H "Content-Type: application/json" \
+  -H "x-goog-api-key: YOUR_GEMINI_API_KEY" \
+  "https://your-sateleaf.example/proxy/YOUR_PROXY_SECRET/mode_balanced,fontsize_1/generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent" \
+  -d '{
+    "contents": [
+      {
+        "role": "user",
+        "parts": [
+          {
+            "text": "Hello from Sateleaf"
+          }
+        ]
+      }
+    ]
+  }'
+```
+
+Sateleaf automatically folds the conversation text before forwarding the request.
+
+Authentication and provider-specific headers are passed upstream, including:
+
+```text
+Authorization: Bearer ...
+X-Goog-API-Key: ...
+```
+
+Sateleaf removes only framing or hop-by-hop headers that need to be regenerated, such as:
+
+```text
+Host
+Content-Length
+Connection
+Transfer-Encoding
+```
+
+## Supported transformations
+
+Sateleaf currently transforms:
+
+```text
+POST .../models/:model:generateContent
+```
+
+and streaming requests:
+
+```text
+POST .../models/:model:streamGenerateContent?alt=sse
+```
+
+Other methods and paths are forwarded without PDF transformation.
+
+Upstream status codes, response bodies, and streams are preserved aside from proxy framing and CORS handling.
+
+## Media and turn preservation
+
+PDF folding only transforms text.
+
+Non-text Gemini parts, including images, are preserved.
+
+A source Gemini content entry remains a single content entry after transformation. Generated PDFs are attached to the originating user turn rather than emitted as synthetic extra turns.
 
 ## Caching and retention
 
-Sateleaf generates deterministic PDFs and tries to preserve stable request prefixes so the upstream Gemini service can reuse its implicit prompt cache, but upstream cache hits are not guaranteed.
+Generated PDFs are deterministic and may be reused from a temporary local cache.
 
-Generated PDFs are reused from an LRU cache in the operating system's temporary directory, bounded to 64 entries, 32 MiB total, 8 MiB per entry, and a 10-minute TTL. Cache filenames are SHA-256 digests and do not contain prompt text, but cached PDF files retain the transformed content until eviction. Add `nocache` to the settings segment, for example `mode_maximum,fontsize_1,nocache`, to skip all cache filesystem access for that request.
+| Limit              | Value      |
+| ------------------ | ---------- |
+| Entries            | 64         |
+| Total size         | 32 MiB     |
+| Maximum entry size | 8 MiB      |
+| TTL                | 10 minutes |
+
+Cache filenames are SHA-256 digests and do not contain prompt text.
+
+The cached PDF itself still contains the transformed prompt content and remains in the operating system's temporary directory until eviction.
+
+Use `nocache` when local retention is undesirable.
+
+Sateleaf attempts to preserve stable transformed request prefixes so that upstream Gemini implicit caching can remain useful, but upstream cache hits are not guaranteed.
 
 ## CORS
 
-The proxy handles preflight itself. For a request with `Origin`, it reflects that origin, reflects requested headers, allows credentials, exposes all response headers, and adds `Vary: Origin`. Requests without an `Origin` header receive no CORS headers.
+Sateleaf handles `OPTIONS` preflight requests locally.
 
-## Heroku Eco
+When an `Origin` header is present, it:
+
+- reflects the request origin,
+- reflects requested headers,
+- allows credentials,
+- exposes response headers,
+- adds `Vary: Origin`.
+
+Requests without an `Origin` header receive no CORS headers.
+
+## Environment variables
+
+### `PROXY_SECRET`
+
+Required.
+
+```text
+PROXY_SECRET=a-long-readable-secret
+```
+
+The proxy secret in the request URL must match this value.
+
+### `MAX_REQUEST_BYTES`
+
+Maximum accepted request body size:
+
+```text
+MAX_REQUEST_BYTES=26214400
+```
+
+The value must be a valid positive byte count.
+
+### `PORT`
+
+Production listening port:
+
+```text
+PORT=3000
+```
+
+Defaults to `3000`.
+
+## Heroku
 
 ```sh
 corepack enable
 pnpm install --frozen-lockfile
 pnpm check
+
 heroku create your-sateleaf
 heroku config:set PROXY_SECRET="a-long-readable-secret"
+
 git push heroku main
 ```
 
-For a client that only supports base URL plus Bearer authorization, configure the base URL as the fixed `/proxy/.../` prefix and use the provider key as its Bearer token. The proxy secret remains in the URL, while the Bearer value passes through to the selected provider.
+For clients that expose only a base URL and Bearer-token field, the fixed Sateleaf `/proxy/.../` prefix can be used as the base URL while the provider API key is supplied as the Bearer token.
 
-Do not put a dot in the settings segment. Dots are reserved for the upstream endpoint segment.
+The proxy secret remains part of the URL, while the `Authorization` value is forwarded upstream.
+
+## Development
+
+```sh
+pnpm dev
+pnpm build
+pnpm test
+
+pnpm format
+pnpm format:check
+
+pnpm lint
+pnpm lint:check
+
+pnpm check
+```
+
+`pnpm check` formats, lints, and runs the test suite.
+
+Main technologies:
+
+- TypeScript
+- Hono
+- Vite
+- Vitest
+- oxlint
+- oxfmt
+
+## Verifying PDF context
+
+To verify that Gemini actually processed the generated PDF, include a unique sentinel string in text that will be folded and ask the model to repeat it.
+
+You can also inspect:
+
+```text
+usageMetadata.promptTokensDetails
+```
+
+When the generated PDF is processed as multimodal context, an `IMAGE` entry should appear.
+
+## Token-saving measurement
+
+An OOTB smoke measurement was run on 2026-09-21 with `gemini-3.5-flash-lite`, `fontsize_2`, and `nocache`. The input was 45,472 characters made from the project README and `src/docs.md` (the reference was included twice). The native baseline was measured with the upstream `countTokens` endpoint: 13,887 tokens for conversation text plus 3,169 tokens for the system instruction, or 17,056 tokens total. Because this `countTokens` endpoint rejected `systemInstruction` in the same request, those two values were summed from two count calls.
+
+The Sateleaf paths used `generateContent` and read `usageMetadata.promptTokenCount` (output tokens were not included):
+
+| Mode       | Prompt tokens | Reduction vs. native baseline |
+| ---------- | ------------: | ----------------------------: |
+| `maximum`  |           324 |                     **98.1%** |
+| `balanced` |         3,490 |                     **79.5%** |
+
+Requests returned HTTP 200 in both modes. The comparison measures prompt-token count, not latency, output quality, or guaranteed billing savings; upstream implicit caching metadata may still appear and was not used in the reduction calculation. Re-run with a fresh API key and the same long input before treating these values as a production benchmark.
+
+### Use-case fixtures
+
+The same smoke test was repeated with longer, use-case-shaped fixtures. Each fixture concatenated the listed pages, duplicated that reference as a simulated long-running context, and used a short scenario-specific system instruction. Values below are native `countTokens` totals versus Sateleaf `generateContent` prompt counts.
+
+| Use case               | Source and input size                                                                                                                                                                                                                                                                                                                                                                             | Native baseline |       `maximum` |        `balanced` |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------: | --------------: | ----------------: |
+| Coding assistant       | [TypeScript Handbook: Functions](https://www.typescriptlang.org/docs/handbook/2/functions.html), [Generics](https://www.typescriptlang.org/docs/handbook/2/generics.html), [Modules](https://www.typescriptlang.org/docs/handbook/2/modules.html), and [Type Manipulation](https://www.typescriptlang.org/docs/handbook/2/types-from-types.html); 174,926 chars                                   |          42,990 | 324 (**99.2%**) | 1,715 (**96.0%**) |
+| RPG / long social chat | [D&D Beyond Adventuring](https://www.dndbeyond.com/sources/dnd/basic-rules-2014/adventuring), [Personality and Background](https://www.dndbeyond.com/sources/dnd/basic-rules-2014/personality-and-background), [2024 Playing the Game](https://www.dndbeyond.com/sources/dnd/br-2024/playing-the-game), and [The Basics](https://www.dndbeyond.com/sources/dnd/br-2024/the-basics); 414,310 chars |          89,057 | 590 (**99.3%**) | 1,827 (**97.9%**) |
+
+These fixtures were fetched on 2026-09-21 and are measurement inputs, not bundled content. The RPG pages remain the property of their respective publishers; follow their terms when reproducing them.
+
+## Security notes
+
+Sateleaf can proxy to dynamically selected HTTPS hosts. Keep `PROXY_SECRET` private and do not expose an instance without access control.
+
+The proxy secret is carried in the URL and may therefore appear in reverse-proxy, CDN, or PaaS access logs.
+
+Provider credentials are forwarded through Sateleaf to the selected upstream. Deploy Sateleaf only on infrastructure you trust.
+
+Generated PDFs may temporarily contain prompt contents unless `nocache` is enabled.
+
+## License
+
+MIT
