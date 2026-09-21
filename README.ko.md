@@ -23,6 +23,19 @@ PageFold에서 아이디어를 얻었습니다.
 - CORS 지원
 - 데이터베이스나 영구 스토리지 불필요
 
+## 토큰 절감 효과
+
+2026-09-21 OOTB 스모크 측정에서 `gemini-3.5-flash-lite`, `fontsize_2`, `nocache`를 사용했습니다. 45,472자 문서 입력의 네이티브 기준은 17,056토큰이었고, Sateleaf 경유 시 `maximum`은 324토큰(**98.1%**), `balanced`는 3,490토큰(**79.5%**)이었습니다.
+
+유즈케이스별 긴 입력에서도 같은 경향을 확인했습니다.
+
+| 유즈케이스           | 입력 크기 | 네이티브 기준 | `maximum`       | `balanced`        |
+| -------------------- | --------: | ------------: | --------------- | ----------------- |
+| 코딩 어시스턴트      | 174,926자 |        42,990 | 324 (**99.2%**) | 1,715 (**96.0%**) |
+| RPG / 장기 소셜 채팅 | 414,310자 |        89,057 | 590 (**99.3%**) | 1,827 (**97.9%**) |
+
+수치는 업스트림 `countTokens`와 Sateleaf `generateContent`의 프롬프트 토큰 비교입니다. 출력 토큰, 지연시간, 품질, 실제 과금 절감 보장은 포함하지 않습니다.
+
 ## 동작 방식
 
 ```mermaid
@@ -495,30 +508,6 @@ usageMetadata.promptTokensDetails
 ```
 
 생성된 PDF가 멀티모달 입력으로 처리되었다면 `IMAGE` 항목이 나타나는지 확인할 수 있습니다.
-
-## 토큰 절감 측정
-
-2026-09-21에 `gemini-3.5-flash-lite`, `fontsize_2`, `nocache` 설정으로 OOTB 스모크 측정을 수행했습니다. 입력은 프로젝트 README와 `src/docs.md`를 합친 뒤 참고 문서를 한 번 더 포함한 45,472자였습니다. 네이티브 기준값은 업스트림 `countTokens`로 대화 13,887토큰과 시스템 지시 3,169토큰을 각각 측정해 합산한 17,056토큰입니다. 이 `countTokens` 엔드포인트는 한 요청 안의 `systemInstruction`을 거부했기 때문에 두 번의 측정값을 합산했습니다.
-
-Sateleaf 경유 요청은 `generateContent`로 실행하고 응답의 `usageMetadata.promptTokenCount`만 사용했습니다(출력 토큰 제외).
-
-| 모드       | 프롬프트 토큰 | 네이티브 기준 절감률 |
-| ---------- | ------------: | -------------------: |
-| `maximum`  |           324 |            **98.1%** |
-| `balanced` |         3,490 |            **79.5%** |
-
-두 모드 모두 HTTP 200을 반환했습니다. 이 비교는 프롬프트 토큰 수만 측정한 것으로 지연시간, 출력 품질, 실제 과금 절감이 보장되는 것은 아닙니다. 업스트림 암묵적 캐시 메타데이터는 표시될 수 있지만 절감률 계산에는 포함하지 않았습니다. 운영 벤치마크로 사용하기 전에는 새 API 키와 동일한 긴 입력으로 다시 측정하세요.
-
-### 유즈케이스별 입력
-
-같은 스모크 테스트를 실제 사용 맥락에 가까운 긴 입력으로 반복했습니다. 아래 페이지들을 이어 붙인 뒤 참고 문서를 한 번 더 복제해 장기 컨텍스트를 흉내 냈고, 시나리오별 짧은 system instruction을 추가했습니다. 수치는 네이티브 `countTokens` 합계와 Sateleaf `generateContent`의 prompt 토큰 비교입니다.
-
-| 유즈케이스           | 출처와 입력 크기                                                                                                                                                                                                                                                                                                                                                                          | 네이티브 기준 |       `maximum` |        `balanced` |
-| -------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------: | --------------: | ----------------: |
-| 코딩 어시스턴트      | [TypeScript Functions](https://www.typescriptlang.org/docs/handbook/2/functions.html), [Generics](https://www.typescriptlang.org/docs/handbook/2/generics.html), [Modules](https://www.typescriptlang.org/docs/handbook/2/modules.html), [Type Manipulation](https://www.typescriptlang.org/docs/handbook/2/types-from-types.html); 174,926자                                             |        42,990 | 324 (**99.2%**) | 1,715 (**96.0%**) |
-| RPG / 장기 소셜 채팅 | [D&D Beyond Adventuring](https://www.dndbeyond.com/sources/dnd/basic-rules-2014/adventuring), [Personality and Background](https://www.dndbeyond.com/sources/dnd/basic-rules-2014/personality-and-background), [2024 Playing the Game](https://www.dndbeyond.com/sources/dnd/br-2024/playing-the-game), [The Basics](https://www.dndbeyond.com/sources/dnd/br-2024/the-basics); 414,310자 |        89,057 | 590 (**99.3%**) | 1,827 (**97.9%**) |
-
-이 입력들은 2026-09-21에 가져와 측정에만 사용했으며 저장소에 원문을 포함하지 않았습니다. RPG 페이지 원문은 각 권리자에게 있으므로 재사용 시 해당 사이트의 조건을 따르세요.
 
 ## 보안 관련 주의사항
 

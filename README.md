@@ -22,6 +22,19 @@ Inspired by PageFold.
 - CORS support
 - No database or persistent storage required
 
+## Token-saving results
+
+An OOTB smoke measurement on 2026-09-21 used `gemini-3.5-flash-lite`, `fontsize_2`, and `nocache`. With a 45,472-character documentation input, the native baseline was 17,056 tokens. Sateleaf reduced the prompt count to 324 tokens (**98.1%**) in `maximum` mode and 3,490 tokens (**79.5%**) in `balanced` mode.
+
+Longer, use-case-shaped fixtures showed the same pattern:
+
+| Use case               |    Input size | Native baseline | `maximum`       | `balanced`        |
+| ---------------------- | ------------: | --------------: | --------------- | ----------------- |
+| Coding assistant       | 174,926 chars |          42,990 | 324 (**99.2%**) | 1,715 (**96.0%**) |
+| RPG / long social chat | 414,310 chars |          89,057 | 590 (**99.3%**) | 1,827 (**97.9%**) |
+
+These are prompt-token measurements from upstream `countTokens` versus Sateleaf `generateContent`; output tokens, latency, quality, and guaranteed billing savings are not included.
+
 ## How it works
 
 ```mermaid
@@ -455,30 +468,6 @@ usageMetadata.promptTokensDetails
 ```
 
 When the generated PDF is processed as multimodal context, an `IMAGE` entry should appear.
-
-## Token-saving measurement
-
-An OOTB smoke measurement was run on 2026-09-21 with `gemini-3.5-flash-lite`, `fontsize_2`, and `nocache`. The input was 45,472 characters made from the project README and `src/docs.md` (the reference was included twice). The native baseline was measured with the upstream `countTokens` endpoint: 13,887 tokens for conversation text plus 3,169 tokens for the system instruction, or 17,056 tokens total. Because this `countTokens` endpoint rejected `systemInstruction` in the same request, those two values were summed from two count calls.
-
-The Sateleaf paths used `generateContent` and read `usageMetadata.promptTokenCount` (output tokens were not included):
-
-| Mode       | Prompt tokens | Reduction vs. native baseline |
-| ---------- | ------------: | ----------------------------: |
-| `maximum`  |           324 |                     **98.1%** |
-| `balanced` |         3,490 |                     **79.5%** |
-
-Requests returned HTTP 200 in both modes. The comparison measures prompt-token count, not latency, output quality, or guaranteed billing savings; upstream implicit caching metadata may still appear and was not used in the reduction calculation. Re-run with a fresh API key and the same long input before treating these values as a production benchmark.
-
-### Use-case fixtures
-
-The same smoke test was repeated with longer, use-case-shaped fixtures. Each fixture concatenated the listed pages, duplicated that reference as a simulated long-running context, and used a short scenario-specific system instruction. Values below are native `countTokens` totals versus Sateleaf `generateContent` prompt counts.
-
-| Use case               | Source and input size                                                                                                                                                                                                                                                                                                                                                                             | Native baseline |       `maximum` |        `balanced` |
-| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------: | --------------: | ----------------: |
-| Coding assistant       | [TypeScript Handbook: Functions](https://www.typescriptlang.org/docs/handbook/2/functions.html), [Generics](https://www.typescriptlang.org/docs/handbook/2/generics.html), [Modules](https://www.typescriptlang.org/docs/handbook/2/modules.html), and [Type Manipulation](https://www.typescriptlang.org/docs/handbook/2/types-from-types.html); 174,926 chars                                   |          42,990 | 324 (**99.2%**) | 1,715 (**96.0%**) |
-| RPG / long social chat | [D&D Beyond Adventuring](https://www.dndbeyond.com/sources/dnd/basic-rules-2014/adventuring), [Personality and Background](https://www.dndbeyond.com/sources/dnd/basic-rules-2014/personality-and-background), [2024 Playing the Game](https://www.dndbeyond.com/sources/dnd/br-2024/playing-the-game), and [The Basics](https://www.dndbeyond.com/sources/dnd/br-2024/the-basics); 414,310 chars |          89,057 | 590 (**99.3%**) | 1,827 (**97.9%**) |
-
-These fixtures were fetched on 2026-09-21 and are measurement inputs, not bundled content. The RPG pages remain the property of their respective publishers; follow their terms when reproducing them.
 
 ## Security notes
 
