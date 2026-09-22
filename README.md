@@ -391,7 +391,14 @@ Required.
 PROXY_SECRET=a-long-readable-secret
 ```
 
-The proxy secret in the request URL must match this value.
+Multiple secrets may be configured as a comma-separated list. Whitespace
+around entries is ignored:
+
+```text
+PROXY_SECRET=primary-secret, backup-secret
+```
+
+The proxy secret in the request URL must match one of these values.
 
 ### `MAX_REQUEST_BYTES`
 

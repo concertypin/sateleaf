@@ -422,7 +422,13 @@ Sateleaf는 동일한 입력에서 가능한 한 안정적인 PDF와 요청 pref
 PROXY_SECRET=a-long-readable-secret
 ```
 
-프록시 URL의 secret이 이 값과 일치해야 합니다.
+여러 secret은 쉼표로 구분해 등록할 수 있으며, 항목 앞뒤 공백은 무시합니다.
+
+```text
+PROXY_SECRET=primary-secret, backup-secret
+```
+
+프록시 URL의 secret이 이 값들 중 하나와 일치해야 합니다.
 
 ### `MAX_REQUEST_BYTES`
 

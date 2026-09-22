@@ -18,7 +18,14 @@ export function hasValidProxySecret(
     pathname: string,
     expected: string | undefined
 ): boolean {
-    return Boolean(expected && pathname.match(PROXY_PATH)?.[1] === expected);
+    const actual = pathname.match(PROXY_PATH)?.[1];
+    if (!actual || !expected) return false;
+
+    return expected
+        .split(",")
+        .map((secret) => secret.trim())
+        .filter(Boolean)
+        .includes(actual);
 }
 
 /**

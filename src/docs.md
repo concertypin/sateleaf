@@ -14,7 +14,7 @@ Example:
 
 The server prepends https:// to the upstream part. Do not include https:// in the URL. Query parameters belong after the endpoint, for example ?alt=sse for Gemini streaming.
 
-The proxy-secret must equal the server's PROXY_SECRET environment variable. The settings segment must not contain a dot; dots are reserved for the upstream endpoint portion.
+The proxy-secret must equal one of the comma-separated values in the server's PROXY_SECRET environment variable. Whitespace around values is ignored. The settings segment must not contain a dot; dots are reserved for the upstream endpoint portion.
 
 ## Settings
 
@@ -70,6 +70,8 @@ OPTIONS is answered locally with a preflight response. When an Origin header is 
 
 ```sh
 PROXY_SECRET=authtoken
+# Multiple values are supported, for example:
+# PROXY_SECRET=primary-secret, backup-secret
 MAX_REQUEST_BYTES=26214400
 ```
 

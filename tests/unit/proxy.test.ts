@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { afterEach, assert, test, vi } from "vitest";
 import { createProxyHandler } from "@/proxy/index.js";
-import { parseProxyRoute } from "@/proxy/route.js";
+import { hasValidProxySecret, parseProxyRoute } from "@/proxy/route.js";
 
 afterEach(() => {
     vi.unstubAllGlobals();
@@ -17,6 +17,21 @@ test("enables PDF caching by default and accepts nocache", () => {
     assert.isFalse(
         parseProxyRoute(`${prefix}maximum,nocache${upstream}`).cachePdf
     );
+});
+
+test("accepts any proxy secret from a comma-separated environment value", () => {
+    const pathname = "/proxy/backup-secret/maximum/example.com/v1/models";
+
+    assert.isTrue(
+        hasValidProxySecret(
+            pathname,
+            "primary-secret, backup-secret, third-secret"
+        )
+    );
+    assert.isFalse(
+        hasValidProxySecret(pathname, "primary-secret,other-secret")
+    );
+    assert.isFalse(hasValidProxySecret(pathname, ", ,"));
 });
 
 test("rejects an oversized Gemini body before forwarding", async () => {
