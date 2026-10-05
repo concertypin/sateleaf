@@ -353,6 +353,53 @@ POST .../models/:model:streamGenerateContent?alt=sse
 
 SSE 응답 역시 전체 내용을 메모리에 버퍼링하지 않고 스트림 형태로 전달합니다.
 
+기본적으로 SSE 응답 헤더를 받으면 즉시 `: keepalive` 주석을 보내고,
+이후 이벤트 사이에 15초마다 주석을 전송합니다. 업스트림 HTTP 상태와 헤더는 유지됩니다.
+PDF 변환이나 업스트림 응답 헤더 대기가 30초를 넘는 경우에는 기본 모드만으로
+Heroku의 최초 응답 제한을 피할 수 없습니다.
+
+주석 전송을 끄려면 설정에 `nokeepalive`를 추가합니다.
+
+```text
+mode_balanced,fontsize_1,nokeepalive
+```
+
+PDF 변환·업스트림 헤더 대기부터 보호하려면 `earlykeepalive`를 추가합니다.
+
+```text
+.../proxy/YOUR_PROXY_SECRET/mode_balanced,fontsize_1,earlykeepalive/generativelanguage.googleapis.com/v1beta/models/MODEL:streamGenerateContent?alt=sse
+```
+
+이 모드는 URL 인증과 설정 검증 직후 HTTP 200 및 SSE keepalive를 보내고 처리를 시작합니다.
+`alt=sse` 또는 `Accept: text/event-stream`으로 SSE 요청임을 명시해야 하며 HEAD는 지원하지 않습니다.
+`nokeepalive`와 `earlykeepalive`는 함께 사용할 수 없습니다.
+선제 응답 후에는 업스트림 HTTP 상태·헤더를 클라이언트 응답에 반영할 수 없습니다.
+잘못된 본문, 크기 제한, 업스트림 HTTP 오류 또는 SSE가 아닌 응답은 SSE `error` 이벤트로 전달됩니다.
+HTTP 오류 이벤트는 원래 응답을 `upstreamBody`에 보존합니다(JSON이면 파싱한 값, 아니면 원문 텍스트).
+`contentType`과 `error.status`도 함께 전달하며, 오류 본문은 1 MiB까지 읽고 초과 시 `bodyTruncated`로 표시합니다.
+본문 읽기 실패 시 받은 부분을 보존하고 `bodyReadFailed`와 `bodyTruncated`로 표시합니다.
+공급자의 상세 오류 메시지와 재시도 정보는 `upstreamBody`에서 확인할 수 있습니다.
+keepalive는 모델 응답을 앞당기지 않으며, dyno 기동 전 대기나 이벤트 루프가 막힌 동안에는 전송할 수 없습니다.
+
+클라이언트 연결 종료 시 업스트림 요청과 응답 읽기를 취소합니다.
+진행 중인 PDF 변환은 완료될 수 있지만, 이후 업스트림으로 전송하지 않습니다.
+`proxy_timing` 로그의 `preparationMs`는 본문 읽기·PDF 변환 시간이고,
+`upstreamHeadersMs`는 업스트림 응답 헤더 대기 시간입니다.
+`proxy_first_upstream_byte`의 `upstreamBodyWaitMs`는 헤더 이후 첫 응답 데이터 대기 시간이고,
+`requestToFirstByteMs`는 요청 처리 시작부터 실제 업스트림 첫 청크까지입니다.
+프록시가 생성한 keepalive와 오류 이벤트는 첫 업스트림 청크 측정에 포함하지 않습니다.
+로그에는 프롬프트, 인증 정보, 요청 URL을 포함하지 않습니다.
+
+응답의 `Server-Timing` 헤더에는 `prepare`(본문 읽기·변환),
+`transform`(PDF 변환·캐시 처리, 변환 요청에만 포함), `upstream_headers`가
+밀리초 단위로 표시됩니다. `transform`은 `prepare`에 포함되므로 합산하지 않습니다.
+Node HTTP 서버에서는 스트림 정상 종료 시 `Server-Timing` trailer로
+`upstream_body_wait`(헤더 이후 첫 업스트림 청크 대기),
+`first_upstream_byte`(요청 처리 시작부터 실제 첫 업스트림 청크), `stream`(응답 본문 처리 전체)도 보냅니다.
+`earlykeepalive`에서는 준비·변환·헤더 대기 시간도 일반 헤더 대신 종료 trailer로 전달합니다.
+브라우저 개발자 도구에서 확인할 수 있지만 Fetch API는 trailer를 제공하지 않습니다.
+Heroku 등 중간 프록시가 trailer를 보존하는지는 배포 환경에서 확인해야 합니다.
+
 ## 이미지와 멀티모달 컨텍스트
 
 Sateleaf의 PDF 변환 대상은 텍스트입니다.

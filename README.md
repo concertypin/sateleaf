@@ -16,6 +16,7 @@ Inspired by PageFold.
 - Dynamic HTTPS upstream routing
 - Transparent pass-through for unsupported paths and methods
 - Streaming-safe Gemini SSE forwarding
+- SSE keepalive comments every 15 seconds after upstream response headers
 - Deterministic PDF generation
 - Bounded local PDF cache with per-request bypass
 - Preservation of non-text parts such as images
@@ -279,6 +280,57 @@ mode_balanced,fontsize_1,nocache
 ```
 
 This skips all PDF-cache filesystem access for that request.
+
+By default, SSE responses send an immediate `: keepalive` comment after upstream
+headers, then comments between events every 15 seconds, preserving upstream HTTP
+status and headers. This does not cover PDF preparation or upstream header waits
+exceeding Heroku's initial 30-second response deadline.
+
+Add `nokeepalive` to the URL settings to disable comments:
+
+```text
+mode_balanced,fontsize_1,nokeepalive
+```
+
+Opt in to protection during preparation and upstream header waits with `earlykeepalive`:
+
+```text
+.../proxy/YOUR_PROXY_SECRET/mode_balanced,fontsize_1,earlykeepalive/generativelanguage.googleapis.com/v1beta/models/MODEL:streamGenerateContent?alt=sse
+```
+
+After authenticating the URL and validating settings, this mode sends HTTP 200
+and an SSE keepalive before starting preparation. Declare SSE using `alt=sse` or
+`Accept: text/event-stream`; HEAD is excluded. `nokeepalive` and `earlykeepalive`
+cannot be combined. Upstream status and headers cannot replace the early response.
+Invalid bodies, size limits, upstream HTTP errors, and non-SSE responses become
+SSE `error` events. For HTTP errors, the event preserves the upstream response in
+`upstreamBody` (parsed JSON or original text), alongside `contentType` and the
+HTTP status in `error.status`. Error bodies are limited to 1 MiB; `bodyTruncated`
+marks a partial body; `bodyReadFailed` indicates a failure while reading it.
+Clients should inspect `upstreamBody` for provider error
+messages and retry details. Keepalive does not accelerate model output or cover dyno startup
+before the handler runs, or periods when the event loop is blocked.
+Client disconnects cancel upstream requests and response reads. An ongoing PDF
+transformation may finish, but the request will not be forwarded afterward.
+
+The `proxy_timing` log reports `preparationMs` (body reading and PDF transformation)
+and `upstreamHeadersMs` (waiting for upstream headers). `proxy_first_upstream_byte`
+reports `upstreamBodyWaitMs` (waiting for the first upstream chunk after headers)
+and `requestToFirstByteMs` from handler start to the first actual upstream chunk,
+excluding proxy keepalive and error events.
+These logs exclude prompts, credentials, and request URLs.
+
+The response `Server-Timing` header exposes `prepare` (body reading and transformation),
+`transform` (PDF/cache transformation, when applicable), and `upstream_headers` in
+milliseconds. `transform` is included in `prepare`; do not add them together.
+On the Node HTTP server, successful stream completion also sends a `Server-Timing`
+trailer with `upstream_body_wait` (first upstream chunk wait after headers),
+`first_upstream_byte` (handler start to first actual upstream chunk), and `stream` (whole
+body processing duration). Browser DevTools can display these trailers, while
+Fetch cannot access them. Trailer preservation through Heroku or other proxies
+requires validation in the deployed environment.
+In `earlykeepalive` mode, preparation, transformation, and upstream header timing
+also arrive in the completion trailer because the response headers are sent first.
 
 ## Gemini example
 

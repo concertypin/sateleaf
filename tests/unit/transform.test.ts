@@ -1,7 +1,7 @@
 import { assert, test } from "vitest";
 import { transformGemini } from "@/transform/index.js";
 
-test("preserves systemInstruction as system text", async () => {
+test.concurrent("preserves systemInstruction as system text", async () => {
     const result = await transformGemini(
         {
             systemInstruction: { parts: [{ text: "Be concise." }] },
@@ -20,7 +20,7 @@ test("preserves systemInstruction as system text", async () => {
     assert.match(JSON.stringify(result.systemInstruction), /Be concise\./u);
 });
 
-test("replaces maximum-mode system text with the PDF directive", async () => {
+test.concurrent("replaces maximum-mode system text with the PDF directive", async () => {
     const result = await transformGemini(
         {
             systemInstruction: { parts: [{ text: "Be concise." }] },
@@ -36,14 +36,15 @@ test("replaces maximum-mode system text with the PDF directive", async () => {
     assert.notMatch(serialized, /Be concise\./u);
 });
 
-test("folds native Gemini text into an inline PDF", async () => {
+test.concurrent("folds native Gemini text into an inline PDF", async () => {
     const result = await transformGemini(
         {
             contents: [{ role: "user", parts: [{ text: "hello" }] }],
             generationConfig: { temperature: 0 },
         },
         "maximum",
-        1
+        1,
+        false
     );
 
     const serialized = JSON.stringify(result);
@@ -52,7 +53,7 @@ test("folds native Gemini text into an inline PDF", async () => {
     assert.match(serialized, /"data":"JVBER/u);
 });
 
-test("merges maximum-mode PDFs into a user turn with media", async () => {
+test.concurrent("merges maximum-mode PDFs into a user turn with media", async () => {
     const result = await transformGemini(
         {
             contents: [
@@ -76,7 +77,7 @@ test("merges maximum-mode PDFs into a user turn with media", async () => {
     assert.match(JSON.stringify(result.contents[0]), /application\/pdf/u);
 });
 
-test("merges balanced-mode PDFs into a user turn with media", async () => {
+test.concurrent("merges balanced-mode PDFs into a user turn with media", async () => {
     const result = await transformGemini(
         {
             contents: [
@@ -100,7 +101,7 @@ test("merges balanced-mode PDFs into a user turn with media", async () => {
     assert.match(JSON.stringify(result.contents[0]), /application\/pdf/u);
 });
 
-test("combines marked sections without splitting the source turn", async () => {
+test.concurrent("combines marked sections without splitting the source turn", async () => {
     const result = await transformGemini(
         {
             contents: [
@@ -121,7 +122,7 @@ test("combines marked sections without splitting the source turn", async () => {
     assert.equal((serialized.match(/application\/pdf/gu) ?? []).length, 2);
 });
 
-test("merges marked PDFs into the existing user turn", async () => {
+test.concurrent("merges marked PDFs into the existing user turn", async () => {
     const result = await transformGemini(
         {
             contents: [
@@ -156,7 +157,7 @@ test("merges marked PDFs into the existing user turn", async () => {
     assert.match(JSON.stringify(content), /"inlineData"/u);
 });
 
-test("attaches marked PDFs to the source user turn", async () => {
+test.concurrent("attaches marked PDFs to the source user turn", async () => {
     const result = await transformGemini(
         {
             contents: [

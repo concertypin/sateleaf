@@ -8,7 +8,7 @@ afterEach(() => {
     vi.unstubAllEnvs();
 });
 
-test("enables PDF caching by default and accepts nocache", () => {
+test.concurrent("enables PDF caching by default and accepts nocache", () => {
     const prefix = "/proxy/test-secret/";
     const upstream =
         "/generativelanguage.googleapis.com/v1beta/models/gemini:generateContent";
@@ -19,7 +19,7 @@ test("enables PDF caching by default and accepts nocache", () => {
     );
 });
 
-test("accepts any proxy secret from a comma-separated environment value", () => {
+test.concurrent("accepts any proxy secret from a comma-separated environment value", () => {
     const pathname = "/proxy/backup-secret/maximum/example.com/v1/models";
 
     assert.isTrue(
@@ -101,5 +101,8 @@ test("relays SSE bodies without buffering or replacing upstream headers", async 
     assert.equal(response.headers.get("x-upstream"), "preserved");
     assert.isNull(response.headers.get("content-encoding"));
     assert.isNull(response.headers.get("content-length"));
-    assert.equal(await response.text(), "data: first\n\ndata: second\n\n");
+    assert.equal(
+        await response.text(),
+        ": keepalive\n\ndata: first\n\ndata: second\n\n"
+    );
 });

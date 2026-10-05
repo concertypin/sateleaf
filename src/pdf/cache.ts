@@ -13,6 +13,7 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { performance } from "node:perf_hooks";
 import { generateTranscriptPdf } from "./index.js";
 
 const CACHE_FORMAT_VERSION = "transcript-pdf-v1";
@@ -33,10 +34,39 @@ export async function transcriptPdfBase64(
     fontSize: number,
     useCache: boolean
 ): Promise<string> {
-    if (!useCache)
-        return Buffer.from(
-            (await generateTranscriptPdf(transcript, fontSize)).bytes
-        ).toString("base64");
+    const startedAt = performance.now();
+    const reportTiming = (
+        cache: "hit" | "miss" | "disabled" | "unavailable",
+        pdfBytes: number,
+        generationMs: number | null,
+        pageCount: number | null
+    ): void => {
+        console.info(
+            JSON.stringify({
+                event: "pdf_timing",
+                cache,
+                inputCharacters: transcript.length,
+                fontSize,
+                generationMs,
+                totalMs: performance.now() - startedAt,
+                pdfBytes,
+                pageCount,
+            })
+        );
+    };
+    if (!useCache) {
+        const generationStartedAt = performance.now();
+        const generated = await generateTranscriptPdf(transcript, fontSize);
+        const generationMs = performance.now() - generationStartedAt;
+        const encoded = Buffer.from(generated.bytes).toString("base64");
+        reportTiming(
+            "disabled",
+            generated.bytes.byteLength,
+            generationMs,
+            generated.pageCount
+        );
+        return encoded;
+    }
 
     const key = cacheKey(transcript, fontSize);
     const path = join(CACHE_DIRECTORY, `${key}.pdf`);
@@ -52,15 +82,19 @@ export async function transcriptPdfBase64(
             } catch {
                 // A valid PDF remains reusable when only LRU metadata fails.
             }
-            return cached.toString("base64");
+            const encoded = cached.toString("base64");
+            reportTiming("hit", cached.byteLength, null, null);
+            return encoded;
         }
-    } catch {
+    } catch (error) {
         // A cache miss or unavailable temporary directory must not fail a request.
+        if (!isMissingFileError(error)) cacheAvailable = false;
     }
 
-    const pdf = Buffer.from(
-        (await generateTranscriptPdf(transcript, fontSize)).bytes
-    );
+    const generationStartedAt = performance.now();
+    const generated = await generateTranscriptPdf(transcript, fontSize);
+    const generationMs = performance.now() - generationStartedAt;
+    const pdf = Buffer.from(generated.bytes);
     if (cacheAvailable && pdf.byteLength <= MAX_ENTRY_BYTES) {
         const temporaryPath = join(
             CACHE_DIRECTORY,
@@ -70,11 +104,19 @@ export async function transcriptPdfBase64(
             await queueCacheWrite(path, temporaryPath, pdf, now.getTime());
         } catch {
             // PDF generation remains useful even when caching is unavailable.
+            cacheAvailable = false;
         } finally {
             await rm(temporaryPath, { force: true }).catch(() => undefined);
         }
     }
-    return pdf.toString("base64");
+    const encoded = pdf.toString("base64");
+    reportTiming(
+        cacheAvailable ? "miss" : "unavailable",
+        pdf.byteLength,
+        generationMs,
+        generated.pageCount
+    );
+    return encoded;
 }
 
 async function ensureCacheDirectory(): Promise<void> {

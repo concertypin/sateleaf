@@ -8,6 +8,8 @@ export interface ProxyRoute {
     mode: Mode;
     fontSize: FontSize;
     cachePdf: boolean;
+    keepalive: boolean;
+    earlyKeepalive: boolean;
 }
 
 /**
@@ -55,13 +57,18 @@ export function parseProxyRoute(pathname: string): ProxyRoute {
 
 function parseProxySettings(
     raw: string
-): Pick<ProxyRoute, "mode" | "fontSize" | "cachePdf"> {
+): Pick<
+    ProxyRoute,
+    "mode" | "fontSize" | "cachePdf" | "keepalive" | "earlyKeepalive"
+> {
     if (raw.includes("."))
         throw new Error("Proxy settings must not contain dots");
 
     let mode: Mode = "maximum";
     let fontSizeValue = 1;
     let cachePdf = true;
+    let keepalive = true;
+    let earlyKeepalive = false;
     for (const item of raw
         .split(",")
         .map((part) => part.trim())
@@ -77,6 +84,10 @@ function parseProxySettings(
         const normalizedLegacyMode = legacyMode?.toLowerCase();
 
         if (!rest.length && key.toLowerCase() === "nocache") cachePdf = false;
+        else if (!rest.length && key.toLowerCase() === "nokeepalive")
+            keepalive = false;
+        else if (!rest.length && key.toLowerCase() === "earlykeepalive")
+            earlyKeepalive = true;
         else if (isMode(normalizedLegacyMode)) mode = normalizedLegacyMode;
         else if (!rest.length && isMode(value)) mode = value;
         else if (key.toLowerCase() === "mode" && isMode(value)) mode = value;
@@ -89,7 +100,15 @@ function parseProxySettings(
 
     if (!isValidFontSize(fontSizeValue))
         throw new Error("fontSize must be between 0 and 12");
-    return { mode, fontSize: fontSizeValue, cachePdf };
+    if (!keepalive && earlyKeepalive)
+        throw new Error("nokeepalive and earlykeepalive cannot be combined");
+    return {
+        mode,
+        fontSize: fontSizeValue,
+        cachePdf,
+        keepalive,
+        earlyKeepalive,
+    };
 }
 
 function parseFontSize(raw: string): FontSize {

@@ -12,31 +12,43 @@ export class InvalidRequestError extends Error {}
 export interface UpstreamBody {
     body: BodyInit | null;
     transformed: boolean;
+    transformMs?: number;
 }
 
 export async function createUpstreamBody(
     request: Request,
     route: ProxyRoute,
-    maxTransformBytes: number
+    maxTransformBytes: number,
+    signal: AbortSignal = request.signal
 ): Promise<UpstreamBody> {
+    signal.throwIfAborted();
     const method = request.method.toUpperCase();
     if (method === "GET" || method === "HEAD")
         return { body: null, transformed: false };
 
-    const bytes = await readBodyWithLimit(request, maxTransformBytes);
+    const bytes = await readBodyWithLimit(request, maxTransformBytes, signal);
+    signal.throwIfAborted();
     if (method !== "POST" || !isGeminiGenerate(route.upstream.pathname))
         return { body: bytes, transformed: false };
 
     try {
         const input: unknown = JSON.parse(new TextDecoder().decode(bytes));
+        signal.throwIfAborted();
+        const transformStarted = performance.now();
         const output = await transformGemini(
             input,
             route.mode,
             route.fontSize,
             route.cachePdf
         );
-        return { body: JSON.stringify(output), transformed: true };
+        signal.throwIfAborted();
+        return {
+            body: JSON.stringify(output),
+            transformed: true,
+            transformMs: performance.now() - transformStarted,
+        };
     } catch (error) {
+        signal.throwIfAborted();
         throw new InvalidRequestError(
             error instanceof Error ? error.message : "Invalid request body"
         );
@@ -45,7 +57,8 @@ export async function createUpstreamBody(
 
 async function readBodyWithLimit(
     request: Request,
-    maxBytes: number
+    maxBytes: number,
+    signal: AbortSignal
 ): Promise<Uint8Array<ArrayBuffer>> {
     const contentLength = Number(request.headers.get("content-length"));
     if (Number.isFinite(contentLength) && contentLength > maxBytes)
@@ -53,17 +66,31 @@ async function readBodyWithLimit(
     if (!request.body) return new Uint8Array();
 
     const reader = request.body.getReader();
+    const onAbort = () => {
+        void reader.cancel(signal.reason).catch(() => {});
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
     const chunks: Uint8Array<ArrayBufferLike>[] = [];
     let totalBytes = 0;
-    while (true) {
-        const result = await reader.read();
-        if (result.done) break;
-        totalBytes += result.value.byteLength;
-        if (totalBytes > maxBytes) {
-            await reader.cancel();
-            throw new RequestTooLargeError("Request too large");
+    try {
+        signal.throwIfAborted();
+        while (true) {
+            const result = await reader.read();
+            signal.throwIfAborted();
+            if (result.done) break;
+            totalBytes += result.value.byteLength;
+            if (totalBytes > maxBytes) {
+                await reader.cancel();
+                throw new RequestTooLargeError("Request too large");
+            }
+            chunks.push(result.value);
         }
-        chunks.push(result.value);
+    } catch (error) {
+        signal.throwIfAborted();
+        throw error;
+    } finally {
+        signal.removeEventListener("abort", onAbort);
+        reader.releaseLock();
     }
 
     const body = new Uint8Array(totalBytes);
