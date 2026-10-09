@@ -118,7 +118,8 @@ export function createProxyHandler(): Handler {
                 const response = new Response(upstreamResponse.body, {
                     status: upstreamResponse.status,
                     statusText: upstreamResponse.statusText,
-                    headers: upstreamResponse.headers,
+                    // The Node adapter retains Headers instances, including fetch's immutable guard.
+                    headers: new Headers(upstreamResponse.headers),
                 });
                 serverTiming = `prepare;dur=${(prepared - started).toFixed(2)}, upstream_headers;dur=${(received - prepared).toFixed(2)}${upstreamBody.transformMs === undefined ? "" : `, transform;dur=${upstreamBody.transformMs.toFixed(2)}`}`;
                 response.headers.append("server-timing", serverTiming);
