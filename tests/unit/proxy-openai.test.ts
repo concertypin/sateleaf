@@ -308,19 +308,19 @@ test("carries tool calls, signatures, and tool results into the native body", as
     const native = JSON.stringify(body);
     assert.include(
         native,
-        '{"functionCall":{"name":"get_weather","args":{"city":"Seoul"}},"thoughtSignature":"sig-a"}'
+        '{"functionCall":{"name":"get_weather","args":{"city":"Seoul"},"id":"call_a"},"thoughtSignature":"sig-a"}'
     );
     assert.include(
         native,
-        '{"functionCall":{"name":"get_weather","args":{"city":"Paris"}}}'
+        '{"functionCall":{"name":"get_weather","args":{"city":"Paris"},"id":"call_b"}}'
     );
     assert.include(
         native,
-        '{"functionResponse":{"name":"get_weather","response":{"c":20}}}'
+        '{"functionResponse":{"name":"get_weather","id":"call_a","response":{"c":20}}}'
     );
     assert.include(
         native,
-        '{"functionResponse":{"name":"get_weather","response":{"output":"18C"}}}'
+        '{"functionResponse":{"name":"get_weather","id":"call_b","response":{"output":"18C"}}}'
     );
 });
 
