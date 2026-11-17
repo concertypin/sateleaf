@@ -14,6 +14,74 @@ type RelayOptions = {
     immediateKeepalive?: boolean;
 };
 
+const JSON_KEEPALIVE = new TextEncoder().encode("\n");
+
+/**
+ * Commits a 200 JSON response before preparing or fetching the upstream
+ * response, sending newline keepalives (insignificant JSON whitespace)
+ * until the complete JSON body of `load()` is written. This keeps
+ * non-streaming calls under platform first-byte deadlines; the caller must
+ * put any error into the JSON body, since the status is already sent.
+ */
+export function createEarlyJsonResponse(
+    load: (signal: AbortSignal) => Promise<Response>,
+    abortController: AbortController,
+    intervalMs = 15_000,
+    onFinish?: (timing: StreamTiming) => void
+): Response {
+    const startedAt = performance.now();
+    let stopped = false;
+    let timer: ReturnType<typeof setInterval> | undefined;
+    const stop = (completed: boolean) => {
+        if (stopped) return;
+        stopped = true;
+        clearInterval(timer);
+        onFinish?.({
+            firstByteMs: null,
+            streamMs: performance.now() - startedAt,
+            completed,
+        });
+    };
+    const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+            controller.enqueue(JSON_KEEPALIVE);
+            timer = setInterval(() => {
+                if (!stopped && (controller.desiredSize ?? 0) > 0)
+                    controller.enqueue(JSON_KEEPALIVE);
+            }, intervalMs);
+            void (async () => {
+                try {
+                    // Let the Node adapter flush the first newline before
+                    // the CPU-heavy PDF work in load() starts.
+                    await setImmediate(undefined, {
+                        signal: abortController.signal,
+                    });
+                    const response = await load(abortController.signal);
+                    const bytes = new Uint8Array(await response.arrayBuffer());
+                    if (stopped) return;
+                    controller.enqueue(bytes);
+                    stop(true);
+                    controller.close();
+                } catch (error) {
+                    if (stopped) return;
+                    stop(false);
+                    controller.error(error);
+                }
+            })();
+        },
+        cancel(reason) {
+            stop(false);
+            abortController.abort(reason);
+        },
+    });
+    return new Response(body, {
+        headers: {
+            "content-type": "application/json; charset=utf-8",
+            "cache-control": "no-cache",
+        },
+    });
+}
+
 /** Relays bytes with bounded buffering and propagates downstream cancellation. */
 export function createKeepaliveResponse(
     upstream: Response,

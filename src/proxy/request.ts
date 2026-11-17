@@ -55,7 +55,7 @@ export async function createUpstreamBody(
     }
 }
 
-async function readBodyWithLimit(
+export async function readBodyWithLimit(
     request: Request,
     maxBytes: number,
     signal: AbortSignal

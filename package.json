@@ -19,10 +19,11 @@
         "start": "node dist/index.js"
     },
     "engines": {
-        "node": ">=22"
+        "node": ">=26"
     },
     "dependencies": {
         "@hono/node-server": "^2.1.1",
+        "ai-compatibles": "link:..\\ai-compatibles",
         "hono": "^4.13.8"
     },
     "devDependencies": {

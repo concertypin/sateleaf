@@ -8,6 +8,7 @@ All agents, such as Claude Code, should keep `**/AGENTS.md` in mind.
 This is a **Hono/Node HTTPS reverse proxy** that converts native Gemini text context into PDF attachments before forwarding requests. It includes:
 
 - Dynamic HTTPS upstream routing protected by `PROXY_SECRET`
+- OpenAI-compatible Chat Completions (`…/openai/chat/completions`), translated to native Gemini through `ai-compatibles`
 - Deterministic PDF generation with an OS temporary-file cache
 - Vitest running in the Node environment
 
@@ -40,7 +41,7 @@ pnpm test
 
 ## Coding Standards
 
-See `docs/rules/` for TypeScript, testing, and tooling guidelines.
+Follow the existing code style; `pnpm check` formats, lints, and tests. (`docs/` only holds `keepalive-benchmark.md`.)
 
 ## TypeScript Configuration
 

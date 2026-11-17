@@ -16,6 +16,7 @@ Inspired by PageFold.
 - Dynamic HTTPS upstream routing
 - Transparent pass-through for unsupported paths and methods
 - Streaming-safe Gemini SSE forwarding
+- OpenAI-compatible Chat Completions on top of native Gemini, with the same PDF folding
 - SSE keepalive comments every 15 seconds after upstream response headers
 - Deterministic PDF generation
 - Bounded local PDF cache with per-request bypass
@@ -160,7 +161,7 @@ Any marker `name=` attribute is ignored in this mode.
 
 ## Requirements
 
-- Node.js 22 or newer
+- Node.js 26 or newer
 - pnpm 10
 
 The repository currently pins:
@@ -281,6 +282,14 @@ mode_balanced,fontsize_1,nocache
 
 This skips all PDF-cache filesystem access for that request.
 
+### Allow Gemini 4 and later
+
+```text
+mode_balanced,fontsize_1,allowgemini4
+```
+
+By default, requests for Gemini 4 and later (a model name of the form `gemini-<major>` with a major version of 4 or higher, for example `gemini-4-flash`) are rejected with HTTP 400, because PDF folding no longer saves tokens on those models. The check applies to native `generateContent` / `streamGenerateContent` requests and to OpenAI-compatible chat completions. Add `allowgemini4` to proxy them anyway.
+
 By default, SSE responses send an immediate `: keepalive` comment after upstream
 headers, then comments between events every 15 seconds, preserving upstream HTTP
 status and headers. This does not cover PDF preparation or upstream header waits
@@ -388,9 +397,102 @@ and streaming requests:
 POST .../models/:model:streamGenerateContent?alt=sse
 ```
 
+Chat Completions requests to any upstream path ending in `/openai/chat/completions` are translated to the native calls above; see [OpenAI-compatible chat completions](#openai-compatible-chat-completions).
+
 Other methods and paths are forwarded without PDF transformation.
 
 Upstream status codes, response bodies, and streams are preserved aside from proxy framing and CORS handling.
+
+## OpenAI-compatible chat completions
+
+Sateleaf also accepts OpenAI Chat Completions requests and serves them from native Gemini. Any upstream path ending in `/openai/chat/completions` is handled in this mode:
+
+```text
+# Vertex AI express mode
+.../proxy/{secret}/{settings}/aiplatform.googleapis.com/v1/publishers/google/openai/chat/completions
+
+# Gemini Developer API
+.../proxy/{secret}/{settings}/generativelanguage.googleapis.com/v1beta/openai/chat/completions
+
+# Vertex AI project paths
+.../proxy/{secret}/{settings}/{region}-aiplatform.googleapis.com/v1/projects/{project}/locations/{location}/publishers/google/openai/chat/completions
+```
+
+> **Behavior change for the Gemini Developer API.** Requests to `generativelanguage.googleapis.com/v1beta/openai/chat/completions` used to be passed through byte-for-byte to Google's own OpenAI-compatible endpoint. They are now translated to native Gemini calls and PDF-folded like any other request. Google's endpoint is no longer reached for that path.
+
+### How it works
+
+Translation is done by the [`ai-compatibles`](https://github.com/concertypin/ai-compatibles) library:
+
+1. The OpenAI request is decoded and the model is read from its `model` field.
+2. It is rebuilt as a native Gemini request, PDF folding is applied as usual, and it is sent to `models/{model}:generateContent`, or `models/{model}:streamGenerateContent?alt=sse` when `stream` is `true`. The upstream URL is derived from the path before `/openai/chat/completions`, and your query parameters are kept.
+3. The Gemini response, or SSE stream, is translated back into Chat Completions form.
+
+Only `POST` is accepted (other methods get 405). A request body must stay within `MAX_REQUEST_BYTES`.
+
+### Authentication
+
+`Authorization: Bearer <key>` is rewritten to `x-goog-api-key: <key>`, unless the client already sent `x-goog-api-key`. On Vertex paths containing `/projects/`, the bearer token is an OAuth access token and is forwarded unchanged as `Authorization`.
+
+### Supported features
+
+- Streaming and non-streaming responses
+- `tools` and `tool_choice`, including parallel tool calls
+- Gemini thought signatures, round-tripped through `tool_calls[].extra_content.google.thought_signature`. Clients must send it back with the tool call. If a client drops it, Sateleaf sends Google's `skip_thought_signature_validator` placeholder instead.
+- `reasoning_effort`, passed to Gemini as `thinkingLevel` as-is. Thought summaries are returned as `reasoning_content`.
+- `extra_body.google.thinking_config`
+- `response_format` with `json_object` or `json_schema`
+- Images as base64 `data:` URLs
+- `usage`, including reasoning and cached tokens
+- Errors in OpenAI error format, carrying Gemini's status and code
+
+### Limits
+
+- Remote image URLs are rejected; send images as base64 data URLs.
+- Requests ai-compatibles cannot represent are rejected with an OpenAI-format error rather than silently dropped.
+- Gemini 4 and later models are rejected unless `allowgemini4` is set.
+- `nocache`, `fontsize`, and folding modes behave as for native requests.
+
+### Example
+
+```sh
+curl \
+  -X POST \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer YOUR_GEMINI_API_KEY" \
+  "https://your-sateleaf.example/proxy/YOUR_PROXY_SECRET/mode_balanced,fontsize_1/generativelanguage.googleapis.com/v1beta/openai/chat/completions" \
+  -d '{
+    "model": "gemini-3.8-flash",
+    "messages": [{ "role": "user", "content": "Hello from Sateleaf" }],
+    "stream": false
+  }'
+```
+
+With the OpenAI SDK, put the Sateleaf prefix in `base_url` and the provider key in `api_key`:
+
+```python
+from openai import OpenAI
+
+client = OpenAI(
+    base_url="https://your-sateleaf.example/proxy/YOUR_PROXY_SECRET/mode_balanced,fontsize_1/generativelanguage.googleapis.com/v1beta/openai",
+    api_key="YOUR_GEMINI_API_KEY",
+)
+reply = client.chat.completions.create(
+    model="gemini-3.8-flash",
+    messages=[{"role": "user", "content": "Hello from Sateleaf"}],
+)
+```
+
+The SDK appends `/chat/completions`. For Vertex AI express mode, use `.../aiplatform.googleapis.com/v1/publishers/google/openai` instead.
+
+### Keepalive in OpenAI mode
+
+Default keepalive applies to streaming responses as for native SSE. With `earlykeepalive`, the HTTP 200 is committed before preparation and the upstream call start, so errors can no longer use their HTTP status; the original status is added to the error object as `status`.
+
+- `stream: true`: an SSE response with `: keepalive` comments every 15 seconds. An error after the 200 arrives as `data: {"error":{...,"status":<http status>}}` followed by `data: [DONE]`, which OpenAI SDKs surface as an API error.
+- `stream: false` (or omitted): a `200 application/json` response, with a newline written every 15 seconds as insignificant JSON whitespace, followed by the JSON body. Errors go into the body as `{"error":{...,"status":<http status>}}`.
+
+Unlike native requests, `earlykeepalive` does not require `alt=sse` or an `Accept: text/event-stream` header in OpenAI mode; the `stream` field decides. Invalid bodies are still rejected with a normal HTTP error status before anything is committed.
 
 ## Media and turn preservation
 
@@ -399,6 +501,8 @@ PDF folding only transforms text.
 Non-text Gemini parts, including images, are preserved.
 
 A source Gemini content entry remains a single content entry after transformation. Generated PDFs are attached to the originating user turn rather than emitted as synthetic extra turns.
+
+In tool conversations (requests containing `functionCall` or `functionResponse` parts), a user turn whose text was entirely folded into the PDF is kept as a short stand-in text turn (`[This turn's text is in the attached PDF transcript.]`). Gemini requires every function-call turn to follow a user or function-response turn, so dropping the emptied turn would make the request invalid.
 
 ## Caching and retention
 

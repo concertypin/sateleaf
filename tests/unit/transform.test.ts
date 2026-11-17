@@ -183,3 +183,89 @@ test.concurrent("attaches marked PDFs to the source user turn", async () => {
     assert.match(JSON.stringify(first), /inlineData/u);
     assert.notMatch(JSON.stringify(last), /inlineData/u);
 });
+
+test.concurrent("keeps folded user turns as stand-ins in tool conversations", async () => {
+    const call = {
+        functionCall: { name: "get_weather", args: { city: "Seoul" } },
+        thoughtSignature: "sig",
+    };
+    const reply = {
+        functionResponse: { name: "get_weather", response: { c: 18 } },
+    };
+    const result = await transformGemini(
+        {
+            contents: [
+                { role: "user", parts: [{ text: "Weather in Seoul?" }] },
+                { role: "model", parts: [call] },
+                { role: "user", parts: [reply] },
+            ],
+        },
+        "maximum",
+        1,
+        false
+    );
+
+    // Gemini rejects a function-call turn that does not follow a user turn.
+    assert(Array.isArray(result.contents));
+    const [first, second, third] = result.contents;
+    assert.deepEqual(first, {
+        role: "user",
+        parts: [
+            { text: "[This turn's text is in the attached PDF transcript.]" },
+        ],
+    });
+    assert.deepEqual(second, { role: "model", parts: [call] });
+    assert.match(JSON.stringify(third), /"functionResponse"/u);
+    assert.match(JSON.stringify(third), /application\/pdf/u);
+    assert.notMatch(JSON.stringify(result.contents), /Weather in Seoul\?/u);
+});
+
+test.concurrent("drops fully folded user turns when no tools are involved", async () => {
+    const result = await transformGemini(
+        {
+            contents: [
+                { role: "user", parts: [{ text: "first" }] },
+                { role: "model", parts: [{ text: "answer" }] },
+                { role: "user", parts: [{ text: "second" }] },
+            ],
+        },
+        "maximum",
+        1,
+        false
+    );
+
+    assert(Array.isArray(result.contents));
+    assert.equal(result.contents.length, 1);
+    assert.notMatch(
+        JSON.stringify(result.contents),
+        /attached PDF transcript/u
+    );
+});
+
+test.concurrent("emits one stand-in per run of folded user turns", async () => {
+    const call = {
+        functionCall: { name: "f", args: {} },
+        thoughtSignature: "sig",
+    };
+    const result = await transformGemini(
+        {
+            contents: [
+                { role: "user", parts: [{ text: "one" }] },
+                { role: "user", parts: [{ text: "two" }] },
+                { role: "user", parts: [] },
+                { role: "model", parts: [call] },
+                {
+                    role: "user",
+                    parts: [{ functionResponse: { name: "f", response: {} } }],
+                },
+            ],
+        },
+        "maximum",
+        1,
+        false
+    );
+
+    assert(Array.isArray(result.contents));
+    assert.equal(result.contents.length, 3);
+    assert.deepEqual(result.contents[1], { role: "model", parts: [call] });
+});

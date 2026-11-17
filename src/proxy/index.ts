@@ -1,12 +1,35 @@
 import type { Handler } from "hono";
 import type { HttpBindings } from "@hono/node-server";
+import { InvalidRequestError as LibraryRequestError } from "ai-compatibles";
+import { UnsupportedFeatureError } from "ai-compatibles";
+import { isGeminiGenerate } from "@/transform/index.js";
+import {
+    createOpenAIUpstreamBody,
+    decodeOpenAIChat,
+    openAIChatBasePath,
+    openAIErrorResponse,
+    openAIProxyError,
+    toGeminiHeaders,
+    toOpenAIJsonError,
+    toOpenAIResponse,
+    toOpenAIStreamError,
+    type OpenAIChatCall,
+} from "./openai.js";
 import {
     createUpstreamBody,
     InvalidRequestError,
+    readBodyWithLimit,
     RequestTooLargeError,
+    type UpstreamBody,
 } from "./request.js";
-import { hasValidProxySecret, parseProxyRoute } from "./route.js";
 import {
+    hasValidProxySecret,
+    isGemini4OrLater,
+    nativeModel,
+    parseProxyRoute,
+} from "./route.js";
+import {
+    createEarlyJsonResponse,
     createEarlyKeepaliveResponse,
     createKeepaliveResponse,
 } from "./stream.js";
@@ -35,15 +58,62 @@ export function createProxyHandler(): Handler {
         }
 
         route.upstream.search = new URL(context.req.url).search;
+
+        // OpenAI-compatible chat: decode up front so request errors get a
+        // real status before any (early keepalive) headers are committed.
+        const openAIBase = openAIChatBasePath(route.upstream.pathname);
+        const fail = openAIBase === null ? errorResponse : openAIProxyError;
+        let openAICall: OpenAIChatCall | undefined;
+        if (openAIBase !== null) {
+            if (context.req.method.toUpperCase() !== "POST")
+                return openAIProxyError(405, "Chat completions require POST");
+            try {
+                const bytes = await readBodyWithLimit(
+                    context.req.raw,
+                    maxRequestBytes,
+                    context.req.raw.signal
+                );
+                openAICall = decodeOpenAIChat(bytes, route, openAIBase);
+            } catch (error) {
+                if (context.req.raw.signal.aborted)
+                    return openAIProxyError(499, "Client disconnected");
+                if (error instanceof RequestTooLargeError)
+                    return openAIProxyError(413, error.message);
+                return openAIErrorResponse(error);
+            }
+        }
+
+        const model =
+            openAICall?.canonical.model ??
+            (isGeminiGenerate(route.upstream.pathname)
+                ? nativeModel(route.upstream.pathname)
+                : undefined);
+        if (
+            model !== undefined &&
+            !route.allowGemini4 &&
+            isGemini4OrLater(model)
+        )
+            return fail(
+                400,
+                `${model} is Gemini 4 or later, where PDF folding no longer saves tokens; add the allowgemini4 setting to proxy it anyway`
+            );
+
+        // OpenAI calls without `stream` get JSON-whitespace keepalives instead.
         if (
             route.earlyKeepalive &&
+            !openAICall &&
             !isSseRequest(context.req.raw, route.upstream)
         )
-            return errorResponse(
+            return fail(
                 400,
                 "earlykeepalive requires an SSE request (alt=sse or Accept: text/event-stream), excluding HEAD"
             );
-        const headers = createUpstreamHeaders(context.req.raw.headers);
+        const headers = openAICall
+            ? toGeminiHeaders(
+                  createUpstreamHeaders(context.req.raw.headers),
+                  openAICall.upstream
+              )
+            : createUpstreamHeaders(context.req.raw.headers);
         const abortController = new AbortController();
         const requestSignal = context.req.raw.signal;
         const abort = () => abortController.abort(requestSignal.reason);
@@ -93,12 +163,20 @@ export function createProxyHandler(): Handler {
         const load = async (): Promise<Response> => {
             try {
                 abortController.signal.throwIfAborted();
-                const upstreamBody = await createUpstreamBody(
-                    context.req.raw,
-                    route,
-                    maxRequestBytes,
-                    abortController.signal
-                );
+                const upstreamBody: UpstreamBody = openAICall
+                    ? {
+                          ...(await createOpenAIUpstreamBody(
+                              openAICall,
+                              route
+                          )),
+                          transformed: true,
+                      }
+                    : await createUpstreamBody(
+                          context.req.raw,
+                          route,
+                          maxRequestBytes,
+                          abortController.signal
+                      );
                 abortController.signal.throwIfAborted();
                 const prepared = performance.now();
                 phase = "upstream_headers";
@@ -106,13 +184,19 @@ export function createProxyHandler(): Handler {
                 if (upstreamBody.transformed)
                     headers.set("content-type", "application/json");
 
-                const upstreamResponse = await fetch(route.upstream, {
-                    method: context.req.method,
-                    headers,
-                    body: upstreamBody.body,
-                    redirect: "manual",
-                    signal: abortController.signal,
-                });
+                const fetched = await fetch(
+                    openAICall?.upstream ?? route.upstream,
+                    {
+                        method: openAICall ? "POST" : context.req.method,
+                        headers,
+                        body: upstreamBody.body,
+                        redirect: "manual",
+                        signal: abortController.signal,
+                    }
+                );
+                const upstreamResponse = openAICall
+                    ? await toOpenAIResponse(fetched, openAICall)
+                    : fetched;
                 const received = performance.now();
                 receivedAt = received;
                 const response = new Response(upstreamResponse.body, {
@@ -156,13 +240,19 @@ export function createProxyHandler(): Handler {
                     })
                 );
                 if (abortController.signal.aborted)
-                    return errorResponse(499, "Client disconnected");
+                    return fail(499, "Client disconnected");
                 if (error instanceof RequestTooLargeError)
-                    return errorResponse(413, error.message);
+                    return fail(413, error.message);
                 if (error instanceof InvalidRequestError)
-                    return errorResponse(400, error.message);
+                    return fail(400, error.message);
+                if (
+                    openAICall &&
+                    (error instanceof LibraryRequestError ||
+                        error instanceof UnsupportedFeatureError)
+                )
+                    return openAIErrorResponse(error);
                 console.error(error);
-                return errorResponse(
+                return fail(
                     502,
                     !route.earlyKeepalive && error instanceof Error
                         ? error.message
@@ -170,9 +260,23 @@ export function createProxyHandler(): Handler {
                 );
             }
         };
+        if (route.earlyKeepalive && openAICall && !openAICall.stream) {
+            const response = createEarlyJsonResponse(
+                async () => toOpenAIJsonError(await load()),
+                abortController,
+                15_000,
+                finish
+            );
+            if (outgoing) response.headers.set("trailer", "Server-Timing");
+            if (outgoing && !("stream" in outgoing))
+                response.headers.set("transfer-encoding", "chunked");
+            return response;
+        }
         if (route.earlyKeepalive) {
             const response = createEarlyKeepaliveResponse(
-                load,
+                openAICall
+                    ? async () => toOpenAIStreamError(await load())
+                    : load,
                 abortController,
                 15_000,
                 finish,

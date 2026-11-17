@@ -11,6 +11,9 @@ importers:
       '@hono/node-server':
         specifier: ^2.1.1
         version: 2.1.1(hono@4.13.8)
+      ai-compatibles:
+        specifier: link:..\ai-compatibles
+        version: link:../ai-compatibles
       hono:
         specifier: ^4.13.8
         version: 4.13.8
