@@ -2,6 +2,7 @@ import type { Handler } from "hono";
 import type { HttpBindings } from "@hono/node-server";
 import { InvalidRequestError as LibraryRequestError } from "ai-compatibles";
 import { UnsupportedFeatureError } from "ai-compatibles";
+import { fetchGeminiWithContinuation } from "ai-compatibles/adapters/gemini-generate-content";
 import { isGeminiGenerate } from "@/transform/index.js";
 import {
     createOpenAIUpstreamBody,
@@ -163,14 +164,11 @@ export function createProxyHandler(): Handler {
         const load = async (): Promise<Response> => {
             try {
                 abortController.signal.throwIfAborted();
-                const upstreamBody: UpstreamBody = openAICall
-                    ? {
-                          ...(await createOpenAIUpstreamBody(
-                              openAICall,
-                              route
-                          )),
-                          transformed: true,
-                      }
+                const nativeBody = openAICall
+                    ? await createOpenAIUpstreamBody(openAICall, route)
+                    : undefined;
+                const upstreamBody: UpstreamBody = nativeBody
+                    ? { ...nativeBody, transformed: true }
                     : await createUpstreamBody(
                           context.req.raw,
                           route,
@@ -184,16 +182,25 @@ export function createProxyHandler(): Handler {
                 if (upstreamBody.transformed)
                     headers.set("content-type", "application/json");
 
-                const fetched = await fetch(
-                    openAICall?.upstream ?? route.upstream,
-                    {
-                        method: openAICall ? "POST" : context.req.method,
-                        headers,
-                        body: upstreamBody.body,
-                        redirect: "manual",
-                        signal: abortController.signal,
-                    }
-                );
+                // OpenAI clients cannot follow Gemini long decode, so the
+                // proxy continues CONTINUATION hops itself; native Gemini
+                // clients get each hop as-is and continue on their own.
+                const fetched =
+                    openAICall && nativeBody
+                        ? await fetchGeminiWithContinuation({
+                              url: openAICall.upstream,
+                              body: nativeBody.body,
+                              headers,
+                              redirect: "manual",
+                              signal: abortController.signal,
+                          })
+                        : await fetch(route.upstream, {
+                              method: context.req.method,
+                              headers,
+                              body: upstreamBody.body,
+                              redirect: "manual",
+                              signal: abortController.signal,
+                          });
                 const upstreamResponse = openAICall
                     ? await toOpenAIResponse(fetched, openAICall)
                     : fetched;

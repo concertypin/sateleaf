@@ -628,3 +628,66 @@ test("decodes percent-encoded native model names before the Gemini 4 gate", asyn
     assert.equal(response.status, 400);
     assert.lengthOf(calls, 0);
 });
+
+test("follows Gemini long-decode CONTINUATION hops for OpenAI clients", async () => {
+    const hops = [
+        {
+            candidates: [
+                {
+                    content: { role: "model", parts: [{ text: "Part one. " }] },
+                    finishReason: "CONTINUATION",
+                    continuationToken: "tok-1",
+                },
+            ],
+            usageMetadata: {
+                promptTokenCount: 10,
+                candidatesTokenCount: 4,
+                totalTokenCount: 14,
+            },
+        },
+        {
+            candidates: [
+                {
+                    content: { role: "model", parts: [{ text: "Part two." }] },
+                    finishReason: "STOP",
+                },
+            ],
+            usageMetadata: {
+                promptTokenCount: 14,
+                candidatesTokenCount: 3,
+                totalTokenCount: 17,
+            },
+        },
+    ];
+    const bodies: unknown[] = [];
+    vi.stubGlobal(
+        "fetch",
+        vi.fn((_input: URL | RequestInfo, init?: RequestInit) => {
+            const raw = init?.body;
+            bodies.push(typeof raw === "string" ? JSON.parse(raw) : raw);
+            return Promise.resolve(Response.json(hops[bodies.length - 1]));
+        })
+    );
+
+    const response = await chat(
+        {
+            model: "gemini-4-argon",
+            messages: [{ role: "user", content: "Prove it." }],
+        },
+        VERTEX_CHAT.replace("/maximum/", "/maximum,allowgemini4/")
+    );
+
+    assert.equal(response.status, 200);
+    assert.lengthOf(bodies, 2);
+    // The second hop repeats the request with the token added.
+    assert.deepEqual(bodies[1], {
+        ...(isRecord(bodies[0]) ? bodies[0] : {}),
+        continuationToken: "tok-1",
+    });
+    assert.deepNestedInclude(await response.json(), {
+        "choices[0].message.content": "Part one. Part two.",
+        "choices[0].finish_reason": "stop",
+        "usage.prompt_tokens": 24,
+        "usage.completion_tokens": 7,
+    });
+});

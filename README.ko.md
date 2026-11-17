@@ -436,6 +436,8 @@ Sateleaf는 OpenAI Chat Completions 요청도 받아 네이티브 Gemini로 처�
 2. 네이티브 Gemini 요청으로 다시 만들고 평소처럼 PDF 변환을 적용한 뒤 `models/{model}:generateContent`로 보냅니다. `stream`이 `true`이면 `models/{model}:streamGenerateContent?alt=sse`로 보냅니다. 업스트림 URL은 `/openai/chat/completions` 앞의 경로에서 만들고, 쿼리 파라미터는 유지합니다.
 3. Gemini 응답(또는 SSE 스트림)을 Chat Completions 형식으로 되돌려 보냅니다.
 
+Gemini 4의 long decode에서 한 요청이 출력 한도(비스트리밍 32K, 스트리밍 64K)에 닿아 `CONTINUATION`으로 끝나면, 프록시가 같은 요청에 `continuationToken`을 붙여 이어서 요청합니다. 클라이언트는 하나의 응답만 받고, usage는 모든 홉을 더한 값입니다(Google이 프록시에 권장하는 방식). 스트림이 홉 중간에 끊기면 체크포인트에서 재개하지 않고 오류로 끝납니다. 네이티브 Gemini 요청에는 이어 받기를 하지 않습니다.
+
 `POST`만 허용하며(다른 메서드는 405), 요청 본문은 `MAX_REQUEST_BYTES` 이내여야 합니다.
 
 ### 인증

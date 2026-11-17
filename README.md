@@ -428,6 +428,8 @@ Translation is done by the [`ai-compatibles`](https://github.com/concertypin/ai-
 2. It is rebuilt as a native Gemini request, PDF folding is applied as usual, and it is sent to `models/{model}:generateContent`, or `models/{model}:streamGenerateContent?alt=sse` when `stream` is `true`. The upstream URL is derived from the path before `/openai/chat/completions`, and your query parameters are kept.
 3. The Gemini response, or SSE stream, is translated back into Chat Completions form.
 
+When a Gemini 4 long-decode hop reaches the per-request output cap (32K non-streaming, 64K streaming) and ends with `CONTINUATION`, the proxy repeats the request with the `continuationToken` until the model finishes. The client gets one response, and usage is summed over all hops, as Google recommends for proxies. A stream that drops in the middle of a hop ends with an error instead of resuming from a checkpoint. Native Gemini requests are not continued; their clients handle long decode themselves.
+
 Only `POST` is accepted (other methods get 405). A request body must stay within `MAX_REQUEST_BYTES`.
 
 ### Authentication
