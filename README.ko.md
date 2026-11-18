@@ -16,6 +16,7 @@ PageFold에서 아이디어를 얻었습니다.
 - 요청 URL을 이용한 동적 HTTPS 업스트림 선택
 - 변환 대상이 아닌 요청은 일반 프록시처럼 전달
 - Gemini SSE 스트리밍 응답 유지
+- OpenAI 호환 Chat Completions 요청을 네이티브 Gemini로 변환해 처리(동일한 PDF 변환 적용)
 - 이미지 등 비텍스트 Gemini part 보존
 - 결정적인 PDF 생성
 - 제한된 로컬 PDF 캐시
@@ -162,7 +163,7 @@ root / PART 3
 
 필요한 환경:
 
-- Node.js 22 이상
+- Node.js 26 이상
 - pnpm 10
 
 저장소를 내려받습니다.
@@ -289,6 +290,14 @@ mode_balanced,fontsize_1,nocache
 
 변환된 프롬프트가 로컬 임시 디렉터리에 남는 것을 피하고 싶을 때 사용할 수 있습니다.
 
+## Gemini 4 이상 허용
+
+```text
+mode_balanced,fontsize_1,allowgemini4
+```
+
+기본적으로 Gemini 4 이상 모델(`gemini-<major>` 형태의 모델 이름에서 major가 4 이상, 예: `gemini-4-flash`)에 대한 요청은 HTTP 400으로 거부됩니다. 이 모델들에서는 PDF 변환으로 토큰이 더 이상 절감되지 않기 때문입니다. 이 검사는 네이티브 `generateContent` / `streamGenerateContent` 요청과 OpenAI 호환 chat completions 모두에 적용됩니다. 그래도 프록시하려면 설정에 `allowgemini4`를 추가합니다.
+
 ## Gemini 요청 예시
 
 `balanced` 또는 `maximum`에서는 별도의 Sateleaf 전용 태그를 넣지 않아도 됩니다.
@@ -349,6 +358,8 @@ POST .../models/:model:generateContent
 POST .../models/:model:streamGenerateContent?alt=sse
 ```
 
+업스트림 경로가 `/openai/chat/completions`로 끝나는 Chat Completions 요청은 위 네이티브 호출로 변환됩니다. [OpenAI 호환 chat completions](#openai-호환-chat-completions)를 참고하세요.
+
 그 외 메서드와 경로는 PDF 변환 없이 그대로 전달됩니다.
 
 SSE 응답 역시 전체 내용을 메모리에 버퍼링하지 않고 스트림 형태로 전달합니다.
@@ -400,6 +411,99 @@ Node HTTP 서버에서는 스트림 정상 종료 시 `Server-Timing` trailer로
 브라우저 개발자 도구에서 확인할 수 있지만 Fetch API는 trailer를 제공하지 않습니다.
 Heroku 등 중간 프록시가 trailer를 보존하는지는 배포 환경에서 확인해야 합니다.
 
+## OpenAI 호환 chat completions
+
+Sateleaf는 OpenAI Chat Completions 요청도 받아 네이티브 Gemini로 처리합니다. 업스트림 경로가 `/openai/chat/completions`로 끝나면 이 모드로 동작합니다.
+
+```text
+# Vertex AI express 모드
+.../proxy/{secret}/{settings}/aiplatform.googleapis.com/v1/publishers/google/openai/chat/completions
+
+# Gemini Developer API
+.../proxy/{secret}/{settings}/generativelanguage.googleapis.com/v1beta/openai/chat/completions
+
+# Vertex AI 프로젝트 경로
+.../proxy/{secret}/{settings}/{region}-aiplatform.googleapis.com/v1/projects/{project}/locations/{location}/publishers/google/openai/chat/completions
+```
+
+> **Gemini Developer API 동작 변경.** `generativelanguage.googleapis.com/v1beta/openai/chat/completions`로 가는 요청은 이전에는 Google의 자체 OpenAI 호환 엔드포인트로 바이트 단위 그대로 전달되었습니다. 이제는 네이티브 Gemini 호출로 변환되고 다른 요청처럼 PDF로 변환됩니다. 이 경로에서는 더 이상 Google의 OpenAI 호환 엔드포인트에 도달하지 않습니다.
+
+### 동작 방식
+
+변환은 [`ai-compatibles`](https://github.com/concertypin/ai-compatibles) 라이브러리가 수행합니다.
+
+1. OpenAI 요청을 해석하고 `model` 필드에서 모델을 읽습니다.
+2. 네이티브 Gemini 요청으로 다시 만들고 평소처럼 PDF 변환을 적용한 뒤 `models/{model}:generateContent`로 보냅니다. `stream`이 `true`이면 `models/{model}:streamGenerateContent?alt=sse`로 보냅니다. 업스트림 URL은 `/openai/chat/completions` 앞의 경로에서 만들고, 쿼리 파라미터는 유지합니다.
+3. Gemini 응답(또는 SSE 스트림)을 Chat Completions 형식으로 되돌려 보냅니다.
+
+Gemini 4의 long decode에서 한 요청이 출력 한도(비스트리밍 32K, 스트리밍 64K)에 닿아 `CONTINUATION`으로 끝나면, 프록시가 같은 요청에 `continuationToken`을 붙여 이어서 요청합니다. 클라이언트는 하나의 응답만 받고, usage는 모든 홉을 더한 값입니다(Google이 프록시에 권장하는 방식). 스트림이 홉 중간에 끊기면 체크포인트에서 재개하지 않고 오류로 끝납니다. 네이티브 Gemini 요청에는 이어 받기를 하지 않습니다.
+
+`POST`만 허용하며(다른 메서드는 405), 요청 본문은 `MAX_REQUEST_BYTES` 이내여야 합니다.
+
+### 인증
+
+`Authorization: Bearer <key>`는 `x-goog-api-key: <key>`로 바뀝니다. 클라이언트가 이미 `x-goog-api-key`를 보낸 경우에는 그대로 둡니다. 경로에 `/projects/`가 있는 Vertex 경로에서는 bearer 토큰이 OAuth 액세스 토큰이므로 `Authorization`으로 그대로 전달합니다.
+
+### 지원 기능
+
+- 스트리밍 및 비스트리밍 응답
+- `tools`, `tool_choice`, 병렬 tool call
+- Gemini thought signature는 `tool_calls[].extra_content.google.thought_signature`로 왕복합니다. 클라이언트는 tool call을 되돌려 보낼 때 이 값도 함께 보내야 합니다. 클라이언트가 이 값을 버리면 Sateleaf가 Google의 `skip_thought_signature_validator` 자리표시자를 대신 보냅니다.
+- `reasoning_effort`는 그대로 Gemini `thinkingLevel`로 전달됩니다. 생각 요약은 `reasoning_content`로 반환됩니다.
+- `extra_body.google.thinking_config`
+- `response_format`의 `json_object`, `json_schema`
+- base64 `data:` URL 이미지
+- reasoning 및 캐시 토큰을 포함한 `usage`
+- Gemini의 상태·코드를 담은 OpenAI 오류 형식
+
+### 제한
+
+- 원격 이미지 URL은 거부됩니다. 이미지는 base64 data URL로 보내세요.
+- ai-compatibles가 표현할 수 없는 요청은 조용히 무시되지 않고 OpenAI 오류 형식으로 거부됩니다.
+- Gemini 4 이상 모델은 `allowgemini4`가 없으면 거부됩니다.
+- `nocache`, `fontsize`, 변환 모드는 네이티브 요청과 동일하게 동작합니다.
+
+### 예시
+
+```sh
+curl \
+  -X POST \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer YOUR_GEMINI_API_KEY" \
+  "https://your-sateleaf.example/proxy/YOUR_PROXY_SECRET/mode_balanced,fontsize_1/generativelanguage.googleapis.com/v1beta/openai/chat/completions" \
+  -d '{
+    "model": "gemini-3.8-flash",
+    "messages": [{ "role": "user", "content": "Hello from Sateleaf" }],
+    "stream": false
+  }'
+```
+
+OpenAI SDK에서는 Sateleaf 접두 경로를 `base_url`에, 공급자 키를 `api_key`에 넣습니다.
+
+```python
+from openai import OpenAI
+
+client = OpenAI(
+    base_url="https://your-sateleaf.example/proxy/YOUR_PROXY_SECRET/mode_balanced,fontsize_1/generativelanguage.googleapis.com/v1beta/openai",
+    api_key="YOUR_GEMINI_API_KEY",
+)
+reply = client.chat.completions.create(
+    model="gemini-3.8-flash",
+    messages=[{"role": "user", "content": "Hello from Sateleaf"}],
+)
+```
+
+SDK가 `/chat/completions`를 덧붙입니다. Vertex AI express 모드에서는 `.../aiplatform.googleapis.com/v1/publishers/google/openai`를 사용하세요.
+
+### OpenAI 모드의 keepalive
+
+기본 keepalive는 네이티브 SSE와 같이 스트리밍 응답에 적용됩니다. `earlykeepalive`를 쓰면 준비와 업스트림 호출 시작 전에 HTTP 200이 먼저 확정되므로 오류가 HTTP 상태를 쓸 수 없습니다. 대신 원래 상태가 오류 객체의 `status`로 추가됩니다.
+
+- `stream: true`: 15초마다 `: keepalive` 주석을 보내는 SSE 응답입니다. 200 이후에 발생한 오류는 `data: {"error":{...,"status":<http status>}}`에 이어 `data: [DONE]`으로 전달되며, OpenAI SDK는 이를 API 오류로 처리합니다.
+- `stream: false`(또는 생략): 먼저 업스트림 응답을 최대 20초까지 기다립니다. 그 안에 온 응답은 오류든 아니든 원래 HTTP 상태 그대로 돌려주므로 OpenAI SDK가 평소처럼 오류를 내고 재시도합니다. 더 늦을 때만 `200 application/json` 응답을 확정하고, 15초마다 개행 문자(JSON에서 의미 없는 공백)를 보낸 뒤 JSON 본문을 보냅니다. 이때 오류는 본문에 `{"error":{...,"status":<http status>}}` 형태로 들어갑니다.
+
+네이티브 요청과 달리 OpenAI 모드의 `earlykeepalive`는 `alt=sse`나 `Accept: text/event-stream` 헤더를 요구하지 않으며 `stream` 필드로 결정합니다. 잘못된 본문 등은 응답이 확정되기 전에 일반 HTTP 오류 상태로 거부됩니다.
+
 ## 이미지와 멀티모달 컨텍스트
 
 Sateleaf의 PDF 변환 대상은 텍스트입니다.
@@ -417,6 +521,8 @@ Sateleaf의 PDF 변환 대상은 텍스트입니다.
 가 들어 있다면 변환 후에도 이미지와 생성된 PDF는 같은 원본 user turn에 유지됩니다.
 
 Sateleaf는 하나의 원본 Gemini content를 여러 개의 가상 turn으로 분리하지 않습니다.
+
+tool 대화(`functionCall` 또는 `functionResponse` part가 있는 요청)에서는 텍스트가 전부 PDF로 옮겨져 비게 된 user turn을 짧은 대체 텍스트 turn(`[This turn's text is in the attached PDF transcript.]`)으로 남겨 둡니다. Gemini는 function call turn이 user 또는 function response turn 뒤에 오도록 요구하므로, 비어 버린 turn을 없애면 요청이 유효하지 않게 되기 때문입니다. 마지막 user turn이 function response turn이면 PDF는 그 뒤에 별도 user turn으로 붙입니다. Vertex AI가 function response 뒤에 다른 part가 붙은 turn을 거절하기 때문입니다("Requests ending with a model turn are not supported").
 
 ## PDF 캐시
 

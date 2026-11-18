@@ -190,6 +190,9 @@ function messageObjects(
     return value.map((entry) => requireJsonObject(entry, `${name} entry`));
 }
 
+/** Stand-in text for a user turn whose text moved into the PDF. */
+const FOLDED_TURN = "[This turn's text is in the attached PDF transcript.]";
+
 function hasTextPart(value: JsonValue): boolean {
     return isJsonObject(value) && typeof value.text === "string";
 }
@@ -241,6 +244,15 @@ export async function transformGemini(
         if (message.sourceIndex !== undefined && message.role !== "system")
             nativeTextBySource.set(message.sourceIndex, message.content);
     }
+    const hasFunctionTurns = source.some(
+        (content) =>
+            Array.isArray(content.parts) &&
+            content.parts.some(
+                (part) =>
+                    isJsonObject(part) &&
+                    ("functionCall" in part || "functionResponse" in part)
+            )
+    );
     const contents: JsonObject[] = [];
     for (const [sourceIndex, content] of source.entries()) {
         const parts: JsonValue[] = [];
@@ -256,14 +268,37 @@ export async function transformGemini(
                 role: content.role === "model" ? "model" : "user",
                 parts,
             });
+        // Gemini requires every function-call turn to follow a user or
+        // function-response turn, so a user turn whose text was folded away
+        // keeps a stand-in in tool conversations (one per run of turns).
+        else if (
+            hasFunctionTurns &&
+            content.role !== "model" &&
+            text(content.parts) &&
+            contents.at(-1)?.role !== "user"
+        )
+            contents.push({ role: "user", parts: [{ text: FOLDED_TURN }] });
     }
     if (unassignedPdfParts.length) {
-        const lastUser = [...contents]
-            .reverse()
-            .find((content) => content.role === "user");
-        if (lastUser && Array.isArray(lastUser.parts))
-            lastUser.parts.push(...unassignedPdfParts);
-        else contents.push({ role: "user", parts: unassignedPdfParts });
+        const lastUserIndex = contents.findLastIndex(
+            (content) => content.role === "user"
+        );
+        const lastUser = contents[lastUserIndex];
+        if (!lastUser || !Array.isArray(lastUser.parts))
+            contents.push({ role: "user", parts: unassignedPdfParts });
+        // Vertex rejects a function-response turn followed by other parts
+        // ("Requests ending with a model turn are not supported"), so the
+        // PDF gets its own user turn right after the function responses.
+        else if (
+            lastUser.parts.some(
+                (part) => isJsonObject(part) && "functionResponse" in part
+            )
+        )
+            contents.splice(lastUserIndex + 1, 0, {
+                role: "user",
+                parts: unassignedPdfParts,
+            });
+        else lastUser.parts.push(...unassignedPdfParts);
     }
     for (const [sourceIndex, pdfParts] of pdfPartsBySource) {
         if (
