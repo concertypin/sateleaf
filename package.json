@@ -23,7 +23,7 @@
     },
     "dependencies": {
         "@hono/node-server": "^2.1.1",
-        "ai-compatibles": "link:..\\ai-compatibles",
+        "ai-compatibles": "0.0.0-alpha.1",
         "hono": "^4.13.8"
     },
     "devDependencies": {

@@ -12,8 +12,8 @@ importers:
         specifier: ^2.1.1
         version: 2.1.1(hono@4.13.8)
       ai-compatibles:
-        specifier: link:..\ai-compatibles
-        version: link:../ai-compatibles
+        specifier: 0.0.0-alpha.1
+        version: 0.0.0-alpha.1
       hono:
         specifier: ^4.13.8
         version: 4.13.8
@@ -818,6 +818,10 @@ packages:
   '@vitest/spy@5.0.1':
     resolution: {integrity: sha512-rbto/mF/SGERxEgYOek7Xm6B9b+y+mVoo+f4b2LymYO8zM1b7uB5nHuhVMTP2hxdzgxvGiZYGxGIaMvL5y180Q==}
 
+  ai-compatibles@0.0.0-alpha.1:
+    resolution: {integrity: sha512-bFvAN6GnALs9uR5H00E/39U7Sm70cY/Hiphe6E+9p01A/yL4OwrPuKQ/D2OjStXoqMQ4T+u5MAzQX9kGvbdJeg==}
+    engines: {node: '>=26'}
+
   assertion-error@2.0.1:
     resolution: {integrity: sha512-Izi8RQcffqCeNVgFigKli1ssklIbpHnCYc6AknXGYoB6grJqyeby7jv12JUQgmTAnIDnbck1uxksT4dzN3PWBA==}
     engines: {node: '>=12'}
@@ -1562,6 +1566,8 @@ snapshots:
       vite: 8.3.0(@types/node@26.6.2)(esbuild@0.28.2)(tsx@4.23.13)
 
   '@vitest/spy@5.0.1': {}
+
+  ai-compatibles@0.0.0-alpha.1: {}
 
   assertion-error@2.0.1: {}
 
