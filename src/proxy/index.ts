@@ -37,9 +37,39 @@ import {
 
 const DEFAULT_MAX_REQUEST_BYTES = 26_214_400;
 
+/**
+ * How long a non-streaming OpenAI call under `earlykeepalive` waits for the
+ * upstream before committing a 200 with JSON keepalives; below Heroku's
+ * 30-second first-byte deadline with room to spare.
+ */
+const DEFAULT_EARLY_JSON_GRACE_MS = 20_000;
+
+export interface ProxyHandlerOptions {
+    /** Overrides DEFAULT_EARLY_JSON_GRACE_MS (tests) */
+    earlyJsonGraceMs?: number;
+}
+
+/** Resolves with the promise's value if it settles within `ms`, else undefined. */
+async function settleWithin<T>(
+    promise: Promise<T>,
+    ms: number
+): Promise<T | undefined> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<undefined>((resolve) => {
+        timer = setTimeout(resolve, ms, undefined);
+    });
+    try {
+        return await Promise.race([promise, timeout]);
+    } finally {
+        clearTimeout(timer);
+    }
+}
+
 /** Creates the catch-all handler that validates and forwards proxy requests. */
-export function createProxyHandler(): Handler {
+export function createProxyHandler(options: ProxyHandlerOptions = {}): Handler {
     const maxRequestBytes = configuredMaxRequestBytes();
+    const earlyJsonGraceMs =
+        options.earlyJsonGraceMs ?? DEFAULT_EARLY_JSON_GRACE_MS;
     return async (context) => {
         if (context.req.method.toUpperCase() === "OPTIONS")
             return new Response(null, { status: 204 });
@@ -267,19 +297,28 @@ export function createProxyHandler(): Handler {
                 );
             }
         };
+        // Non-streaming OpenAI calls wait for the upstream first: a 200 sent
+        // early would hide errors from SDKs (they only raise on the HTTP
+        // status), so the JSON keepalive starts only when the answer is
+        // slow enough to risk the platform's first-byte deadline.
+        let quickResponse: Response | undefined;
         if (route.earlyKeepalive && openAICall && !openAICall.stream) {
-            const response = createEarlyJsonResponse(
-                async () => toOpenAIJsonError(await load()),
-                abortController,
-                15_000,
-                finish
-            );
-            if (outgoing) response.headers.set("trailer", "Server-Timing");
-            if (outgoing && !("stream" in outgoing))
-                response.headers.set("transfer-encoding", "chunked");
-            return response;
+            const loading = load();
+            quickResponse = await settleWithin(loading, earlyJsonGraceMs);
+            if (quickResponse === undefined) {
+                const response = createEarlyJsonResponse(
+                    async () => toOpenAIJsonError(await loading),
+                    abortController,
+                    15_000,
+                    finish
+                );
+                if (outgoing) response.headers.set("trailer", "Server-Timing");
+                if (outgoing && !("stream" in outgoing))
+                    response.headers.set("transfer-encoding", "chunked");
+                return response;
+            }
         }
-        if (route.earlyKeepalive) {
+        if (route.earlyKeepalive && quickResponse === undefined) {
             const response = createEarlyKeepaliveResponse(
                 openAICall
                     ? async () => toOpenAIStreamError(await load())
@@ -294,7 +333,7 @@ export function createProxyHandler(): Handler {
                 response.headers.set("transfer-encoding", "chunked");
             return response;
         }
-        const response = await load();
+        const response = quickResponse ?? (await load());
         if (receivedAt === undefined) {
             requestSignal.removeEventListener("abort", abort);
             return response;

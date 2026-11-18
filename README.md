@@ -492,7 +492,7 @@ The SDK appends `/chat/completions`. For Vertex AI express mode, use `.../aiplat
 Default keepalive applies to streaming responses as for native SSE. With `earlykeepalive`, the HTTP 200 is committed before preparation and the upstream call start, so errors can no longer use their HTTP status; the original status is added to the error object as `status`.
 
 - `stream: true`: an SSE response with `: keepalive` comments every 15 seconds. An error after the 200 arrives as `data: {"error":{...,"status":<http status>}}` followed by `data: [DONE]`, which OpenAI SDKs surface as an API error.
-- `stream: false` (or omitted): a `200 application/json` response, with a newline written every 15 seconds as insignificant JSON whitespace, followed by the JSON body. Errors go into the body as `{"error":{...,"status":<http status>}}`.
+- `stream: false` (or omitted): the proxy first waits up to 20 seconds for the upstream. An answer within that time, error or not, is returned as is with its real HTTP status, so OpenAI SDKs raise and retry as usual. Only a slower answer gets a committed `200 application/json` response, with a newline written every 15 seconds as insignificant JSON whitespace, followed by the JSON body; errors then go into the body as `{"error":{...,"status":<http status>}}`.
 
 Unlike native requests, `earlykeepalive` does not require `alt=sse` or an `Accept: text/event-stream` header in OpenAI mode; the `stream` field decides. Invalid bodies are still rejected with a normal HTTP error status before anything is committed.
 

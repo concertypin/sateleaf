@@ -500,7 +500,7 @@ SDK가 `/chat/completions`를 덧붙입니다. Vertex AI express 모드에서는
 기본 keepalive는 네이티브 SSE와 같이 스트리밍 응답에 적용됩니다. `earlykeepalive`를 쓰면 준비와 업스트림 호출 시작 전에 HTTP 200이 먼저 확정되므로 오류가 HTTP 상태를 쓸 수 없습니다. 대신 원래 상태가 오류 객체의 `status`로 추가됩니다.
 
 - `stream: true`: 15초마다 `: keepalive` 주석을 보내는 SSE 응답입니다. 200 이후에 발생한 오류는 `data: {"error":{...,"status":<http status>}}`에 이어 `data: [DONE]`으로 전달되며, OpenAI SDK는 이를 API 오류로 처리합니다.
-- `stream: false`(또는 생략): `200 application/json` 응답을 즉시 확정하고, 15초마다 개행 문자(JSON에서 의미 없는 공백)를 보낸 뒤 JSON 본문을 보냅니다. 오류는 본문에 `{"error":{...,"status":<http status>}}` 형태로 들어갑니다.
+- `stream: false`(또는 생략): 먼저 업스트림 응답을 최대 20초까지 기다립니다. 그 안에 온 응답은 오류든 아니든 원래 HTTP 상태 그대로 돌려주므로 OpenAI SDK가 평소처럼 오류를 내고 재시도합니다. 더 늦을 때만 `200 application/json` 응답을 확정하고, 15초마다 개행 문자(JSON에서 의미 없는 공백)를 보낸 뒤 JSON 본문을 보냅니다. 이때 오류는 본문에 `{"error":{...,"status":<http status>}}` 형태로 들어갑니다.
 
 네이티브 요청과 달리 OpenAI 모드의 `earlykeepalive`는 `alt=sse`나 `Accept: text/event-stream` 헤더를 요구하지 않으며 `stream` 필드로 결정합니다. 잘못된 본문 등은 응답이 확정되기 전에 일반 HTTP 오류 상태로 거부됩니다.
 

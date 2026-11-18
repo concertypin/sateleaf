@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import { afterEach, assert, beforeEach, test, vi } from "vitest";
-import { createProxyHandler } from "@/proxy/index.js";
+import { createProxyHandler, type ProxyHandlerOptions } from "@/proxy/index.js";
 import { openAIChatBasePath } from "@/proxy/openai.js";
 import {
     isGemini4OrLater,
@@ -65,8 +65,12 @@ function dataEvents(text: string): unknown[] {
         .map((data): unknown => (data === "[DONE]" ? data : JSON.parse(data)));
 }
 
-function chat(body: Record<string, unknown>, path = VERTEX_CHAT) {
-    return new Hono().all("/*", createProxyHandler()).request(path, {
+function chat(
+    body: Record<string, unknown>,
+    path = VERTEX_CHAT,
+    options?: ProxyHandlerOptions
+) {
+    return new Hono().all("/*", createProxyHandler(options)).request(path, {
         method: "POST",
         headers: {
             authorization: "Bearer vertex-key",
@@ -392,25 +396,75 @@ test("reports upstream errors in-stream when early keepalive committed a 200", a
     assert.equal(events.at(-1), "[DONE]");
 });
 
-test("answers non-streaming early keepalive calls with whitespace-led JSON", async () => {
-    stubUpstream(() =>
-        Response.json({
-            candidates: [
-                {
-                    content: { role: "model", parts: [{ text: "ok" }] },
-                    finishReason: "STOP",
-                },
-            ],
-        })
+/** Resolves fetch with `respond()` after `ms`, like a slow upstream. */
+function stubSlowUpstream(ms: number, respond: () => Response): void {
+    vi.stubGlobal(
+        "fetch",
+        vi.fn(
+            () =>
+                new Promise<Response>((resolve) => {
+                    setTimeout(() => resolve(respond()), ms);
+                })
+        )
+    );
+}
+
+const geminiOk = () =>
+    Response.json({
+        candidates: [
+            {
+                content: { role: "model", parts: [{ text: "ok" }] },
+                finishReason: "STOP",
+            },
+        ],
+    });
+
+const geminiOverloaded = () =>
+    Response.json(
+        { error: { code: 503, message: "Overloaded", status: "UNAVAILABLE" } },
+        { status: 503, headers: { "retry-after": "7" } }
     );
 
-    const response = await chat(
-        {
-            model: "gemini-3.8-flash",
-            messages: [{ role: "user", content: "hi" }],
-        },
-        VERTEX_CHAT.replace("/maximum/", "/earlykeepalive/")
-    );
+const nonStreaming = {
+    model: "gemini-3.8-flash",
+    messages: [{ role: "user", content: "hi" }],
+};
+const EARLY_CHAT = VERTEX_CHAT.replace("/maximum/", "/earlykeepalive/");
+
+test("answers quick non-streaming early keepalive calls as plain JSON", async () => {
+    stubUpstream(geminiOk);
+
+    const response = await chat(nonStreaming, EARLY_CHAT);
+
+    assert.equal(response.status, 200);
+    const text = await response.text();
+    // Answered within the grace period: no keepalive was committed.
+    assert.isFalse(text.startsWith("\n"));
+    assert.deepNestedInclude(JSON.parse(text), {
+        "choices[0].message.content": "ok",
+    });
+});
+
+test("keeps the real status for quick errors under early keepalive", async () => {
+    stubUpstream(geminiOverloaded);
+
+    const response = await chat(nonStreaming, EARLY_CHAT);
+
+    // SDKs only retry and raise on the HTTP status, so it must not be 200.
+    assert.equal(response.status, 503);
+    assert.equal(response.headers.get("retry-after"), "7");
+    assert.deepNestedInclude(await response.json(), {
+        "error.message": "Overloaded",
+        "error.code": "UNAVAILABLE",
+    });
+});
+
+test("starts whitespace keepalives when the upstream outlasts the grace period", async () => {
+    stubSlowUpstream(60, geminiOk);
+
+    const response = await chat(nonStreaming, EARLY_CHAT, {
+        earlyJsonGraceMs: 5,
+    });
 
     assert.equal(response.status, 200);
     assert.match(response.headers.get("content-type") ?? "", /json/u);
@@ -423,27 +477,12 @@ test("answers non-streaming early keepalive calls with whitespace-led JSON", asy
     });
 });
 
-test("puts errors into the JSON body when early keepalive committed a 200", async () => {
-    stubUpstream(() =>
-        Response.json(
-            {
-                error: {
-                    code: 503,
-                    message: "Overloaded",
-                    status: "UNAVAILABLE",
-                },
-            },
-            { status: 503 }
-        )
-    );
+test("puts slow errors into the JSON body once a 200 is committed", async () => {
+    stubSlowUpstream(60, geminiOverloaded);
 
-    const response = await chat(
-        {
-            model: "gemini-3.8-flash",
-            messages: [{ role: "user", content: "hi" }],
-        },
-        VERTEX_CHAT.replace("/maximum/", "/earlykeepalive/")
-    );
+    const response = await chat(nonStreaming, EARLY_CHAT, {
+        earlyJsonGraceMs: 5,
+    });
 
     assert.equal(response.status, 200);
     assert.deepNestedInclude(JSON.parse(await response.text()), {
