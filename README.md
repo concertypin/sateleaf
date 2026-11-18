@@ -504,7 +504,7 @@ Non-text Gemini parts, including images, are preserved.
 
 A source Gemini content entry remains a single content entry after transformation. Generated PDFs are attached to the originating user turn rather than emitted as synthetic extra turns.
 
-In tool conversations (requests containing `functionCall` or `functionResponse` parts), a user turn whose text was entirely folded into the PDF is kept as a short stand-in text turn (`[This turn's text is in the attached PDF transcript.]`). Gemini requires every function-call turn to follow a user or function-response turn, so dropping the emptied turn would make the request invalid.
+In tool conversations (requests containing `functionCall` or `functionResponse` parts), a user turn whose text was entirely folded into the PDF is kept as a short stand-in text turn (`[This turn's text is in the attached PDF transcript.]`). Gemini requires every function-call turn to follow a user or function-response turn, so dropping the emptied turn would make the request invalid. When the last user turn holds function responses, the PDF goes into a separate user turn right after it, because Vertex AI rejects a function-response turn with trailing parts ("Requests ending with a model turn are not supported").
 
 ## Caching and retention
 

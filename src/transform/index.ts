@@ -280,12 +280,25 @@ export async function transformGemini(
             contents.push({ role: "user", parts: [{ text: FOLDED_TURN }] });
     }
     if (unassignedPdfParts.length) {
-        const lastUser = [...contents]
-            .reverse()
-            .find((content) => content.role === "user");
-        if (lastUser && Array.isArray(lastUser.parts))
-            lastUser.parts.push(...unassignedPdfParts);
-        else contents.push({ role: "user", parts: unassignedPdfParts });
+        const lastUserIndex = contents.findLastIndex(
+            (content) => content.role === "user"
+        );
+        const lastUser = contents[lastUserIndex];
+        if (!lastUser || !Array.isArray(lastUser.parts))
+            contents.push({ role: "user", parts: unassignedPdfParts });
+        // Vertex rejects a function-response turn followed by other parts
+        // ("Requests ending with a model turn are not supported"), so the
+        // PDF gets its own user turn right after the function responses.
+        else if (
+            lastUser.parts.some(
+                (part) => isJsonObject(part) && "functionResponse" in part
+            )
+        )
+            contents.splice(lastUserIndex + 1, 0, {
+                role: "user",
+                parts: unassignedPdfParts,
+            });
+        else lastUser.parts.push(...unassignedPdfParts);
     }
     for (const [sourceIndex, pdfParts] of pdfPartsBySource) {
         if (

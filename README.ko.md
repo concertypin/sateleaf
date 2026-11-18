@@ -522,7 +522,7 @@ Sateleaf의 PDF 변환 대상은 텍스트입니다.
 
 Sateleaf는 하나의 원본 Gemini content를 여러 개의 가상 turn으로 분리하지 않습니다.
 
-tool 대화(`functionCall` 또는 `functionResponse` part가 있는 요청)에서는 텍스트가 전부 PDF로 옮겨져 비게 된 user turn을 짧은 대체 텍스트 turn(`[This turn's text is in the attached PDF transcript.]`)으로 남겨 둡니다. Gemini는 function call turn이 user 또는 function response turn 뒤에 오도록 요구하므로, 비어 버린 turn을 없애면 요청이 유효하지 않게 되기 때문입니다.
+tool 대화(`functionCall` 또는 `functionResponse` part가 있는 요청)에서는 텍스트가 전부 PDF로 옮겨져 비게 된 user turn을 짧은 대체 텍스트 turn(`[This turn's text is in the attached PDF transcript.]`)으로 남겨 둡니다. Gemini는 function call turn이 user 또는 function response turn 뒤에 오도록 요구하므로, 비어 버린 turn을 없애면 요청이 유효하지 않게 되기 때문입니다. 마지막 user turn이 function response turn이면 PDF는 그 뒤에 별도 user turn으로 붙입니다. Vertex AI가 function response 뒤에 다른 part가 붙은 turn을 거절하기 때문입니다("Requests ending with a model turn are not supported").
 
 ## PDF 캐시
 

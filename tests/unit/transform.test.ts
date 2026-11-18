@@ -207,7 +207,7 @@ test.concurrent("keeps folded user turns as stand-ins in tool conversations", as
 
     // Gemini rejects a function-call turn that does not follow a user turn.
     assert(Array.isArray(result.contents));
-    const [first, second, third] = result.contents;
+    const [first, second, third, fourth] = result.contents;
     assert.deepEqual(first, {
         role: "user",
         parts: [
@@ -215,8 +215,15 @@ test.concurrent("keeps folded user turns as stand-ins in tool conversations", as
         ],
     });
     assert.deepEqual(second, { role: "model", parts: [call] });
-    assert.match(JSON.stringify(third), /"functionResponse"/u);
-    assert.match(JSON.stringify(third), /application\/pdf/u);
+    // Vertex rejects a function-response turn with trailing parts, so the
+    // PDF follows in a turn of its own.
+    assert.deepEqual(third, { role: "user", parts: [reply] });
+    assert(
+        typeof fourth === "object" && fourth !== null && !Array.isArray(fourth)
+    );
+    assert.equal(fourth.role, "user");
+    assert.match(JSON.stringify(fourth), /application\/pdf/u);
+    assert.equal(result.contents.length, 4);
     assert.notMatch(JSON.stringify(result.contents), /Weather in Seoul\?/u);
 });
 
@@ -266,6 +273,7 @@ test.concurrent("emits one stand-in per run of folded user turns", async () => {
     );
 
     assert(Array.isArray(result.contents));
-    assert.equal(result.contents.length, 3);
+    // stand-in, function call, function response, PDF
+    assert.equal(result.contents.length, 4);
     assert.deepEqual(result.contents[1], { role: "model", parts: [call] });
 });
