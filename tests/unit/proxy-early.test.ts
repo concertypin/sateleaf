@@ -124,11 +124,11 @@ test.each([
 );
 
 test.each([
-    ["{", undefined, 400],
-    ["too large", "2", 413],
+    ["{", undefined, 400, "INVALID_ARGUMENT"],
+    ["too large", "2", 413, "RESOURCE_EXHAUSTED"],
 ])(
     "reports body errors through SSE after committing 200",
-    async (body, limit, status) => {
+    async (body, limit, status, googleStatus) => {
         if (limit) vi.stubEnv("MAX_REQUEST_BYTES", limit);
         const fetch = vi.fn<typeof globalThis.fetch>();
         vi.stubGlobal("fetch", fetch);
@@ -136,10 +136,11 @@ test.each([
         assert.equal(response.status, 200);
         const { text } = await readUntilEnd(response.body!);
         assert.notInclude(text, "event:");
-        assert.equal(
-            firstData<{ error: { code: number } }>(text).error.code,
-            status
-        );
+        const { error } = firstData<{
+            error: { code: number; status: string };
+        }>(text);
+        assert.equal(error.code, status);
+        assert.equal(error.status, googleStatus);
         assert.equal(fetch.mock.calls.length, 0);
     }
 );
