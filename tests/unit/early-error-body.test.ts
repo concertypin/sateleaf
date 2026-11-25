@@ -1,9 +1,11 @@
 import { setImmediate } from "node:timers/promises";
 import { expect, test, vi } from "vitest";
 import { createEarlyKeepaliveResponse } from "@/proxy/stream.js";
+import { readUntilEnd } from "./helpers-stream.js";
 
 type ErrorPayload = {
-    error: { code: string; message: string; status: number };
+    error: { code: number; message: string; status: string };
+    proxyCode: string;
     upstreamBody: unknown;
     contentType: string | null;
     bodyTruncated?: boolean;
@@ -14,10 +16,13 @@ function parseError(text: string): ErrorPayload {
     return JSON.parse(line!.slice(6)) as ErrorPayload;
 }
 function relay(upstream: Response) {
-    return createEarlyKeepaliveResponse(
+    const response = createEarlyKeepaliveResponse(
         () => Promise.resolve(upstream),
         new AbortController()
     );
+    // Early errors end the stream abnormally, so text() would reject; return what was sent.
+    response.text = async () => (await readUntilEnd(response.body!)).text;
+    return response;
 }
 
 test.concurrent("preserves Gemini JSON error details and retryInfo without forwarding response headers", async () => {
@@ -50,11 +55,13 @@ test.concurrent("preserves Gemini JSON error details and retryInfo without forwa
     expect(response.status).toBe(200);
     expect(response.headers.get("x-upstream-secret")).toBeNull();
     const payload = parseError(await response.text());
-    expect(payload.error).toMatchObject({
-        code: "UPSTREAM_HTTP_ERROR",
-        status: 429,
+    expect(payload.error).toEqual({
+        code: 429,
+        status: "RESOURCE_EXHAUSTED",
+        message: "Quota exceeded",
     });
     expect(payload).toMatchObject({
+        proxyCode: "UPSTREAM_HTTP_ERROR",
         upstreamBody: body,
         contentType: "application/json; charset=utf-8",
     });
@@ -74,7 +81,7 @@ test.concurrent("preserves multiline non-JSON text safely in a single SSE data l
     expect(parseError(result)).toMatchObject({
         upstreamBody: text,
         contentType: "text/plain",
-        error: { status: 503 },
+        error: { code: 503, status: "UNAVAILABLE", message: text },
     });
 });
 
@@ -85,7 +92,7 @@ test.concurrent("preserves empty error body and absent content type", async () =
     expect(result).toMatchObject({
         upstreamBody: "",
         contentType: null,
-        error: { status: 500 },
+        error: { code: 500, status: "INTERNAL" },
     });
     expect(result.bodyTruncated).not.toBe(true);
 });
@@ -103,12 +110,13 @@ test.concurrent("HTTP error diagnostics never count as the first upstream SSE by
         finish,
         first
     );
-    expect(parseError(await response.text()).upstreamBody).toEqual({
+    const { text } = await readUntilEnd(response.body!);
+    expect(parseError(text).upstreamBody).toEqual({
         error: { message: "busy" },
     });
     expect(first).not.toHaveBeenCalled();
     expect(finish).toHaveBeenCalledWith(
-        expect.objectContaining({ firstByteMs: null, completed: true })
+        expect.objectContaining({ firstByteMs: null, completed: false })
     );
 });
 
@@ -221,11 +229,8 @@ test.concurrent("keepalive continues while the HTTP error body remains pending",
     );
     source.enqueue(new TextEncoder().encode("busy"));
     source.close();
-    let result = "";
-    for (;;) {
-        const chunk = await reader.read();
-        if (chunk.done) break;
-        result += new TextDecoder().decode(chunk.value);
-    }
+    reader.releaseLock();
+    const { text: result, error } = await readUntilEnd(response.body!);
+    expect(error).toBeInstanceOf(Error);
     expect(parseError(result).upstreamBody).toBe("busy");
 });

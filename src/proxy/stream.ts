@@ -77,7 +77,8 @@ export function createEarlyKeepaliveResponse(
                 if (abortController.signal.aborted) return null;
                 return errorReader(
                     "UPSTREAM_REQUEST_FAILED",
-                    "Upstream request failed"
+                    "Upstream request failed",
+                    502
                 );
             }
             if (abortController.signal.aborted) {
@@ -110,7 +111,7 @@ export function createEarlyKeepaliveResponse(
                 return errorReader(
                     "UPSTREAM_NOT_SSE",
                     "Upstream did not return an SSE response",
-                    upstream.status
+                    502
                 );
             }
             return upstream.body?.getReader() ?? null;
@@ -192,14 +193,59 @@ async function readErrorBody(
     return metadata;
 }
 
+const GOOGLE_STATUS: Record<number, string> = {
+    400: "INVALID_ARGUMENT",
+    401: "UNAUTHENTICATED",
+    403: "PERMISSION_DENIED",
+    404: "NOT_FOUND",
+    429: "RESOURCE_EXHAUSTED",
+    500: "INTERNAL",
+    503: "UNAVAILABLE",
+    504: "DEADLINE_EXCEEDED",
+};
+
+/** Extracts a user-facing message and Google status from a preserved upstream body. */
+function describeUpstreamError(body: unknown): {
+    message?: string;
+    status?: string;
+} {
+    if (typeof body === "string") return body ? { message: body } : {};
+    if (typeof body !== "object" || body === null) return {};
+    const error = (body as { error?: unknown }).error;
+    if (typeof error === "string") return { message: error };
+    if (typeof error !== "object" || error === null) return {};
+    const { message, status } = error as {
+        message?: unknown;
+        status?: unknown;
+    };
+    return {
+        ...(typeof message === "string" && message ? { message } : {}),
+        ...(typeof status === "string" && status ? { status } : {}),
+    };
+}
+
+/**
+ * Encodes a failure like Gemini's own mid-stream error: `data: {"error":{code,message,status}}`.
+ * The relay then ends the response abnormally so no client mistakes it for a clean finish.
+ */
 function errorReader(
-    code: string,
-    message: string,
-    status?: number,
+    proxyCode: string,
+    fallbackMessage: string,
+    httpStatus: number,
     metadata?: ErrorBodyMetadata
 ) {
+    const described = describeUpstreamError(metadata?.upstreamBody);
+    const payload = {
+        error: {
+            code: httpStatus,
+            message: described.message ?? fallbackMessage,
+            status: described.status ?? GOOGLE_STATUS[httpStatus] ?? "UNKNOWN",
+        },
+        proxyCode,
+        ...metadata,
+    };
     const reader = new Response(
-        `event: error\ndata: ${JSON.stringify({ error: { code, message, ...(status === undefined ? {} : { status }) }, ...metadata })}\n\n`
+        `data: ${JSON.stringify(payload)}\n\n`
     ).body!.getReader();
     syntheticReaders.add(reader);
     return reader;
@@ -296,6 +342,19 @@ function createRelay(
                     : { done: true as const, value: undefined };
                 if (stopped) return;
                 if (result.done) {
+                    if (currentReader && syntheticReaders.has(currentReader)) {
+                        // The error chunk was consumed; end abnormally so the client
+                        // sees a failed stream instead of a clean (empty) completion.
+                        // Yield one I/O turn so the adapter can write the chunk first.
+                        await setImmediate();
+                        if (stopped) return;
+                        cleanup();
+                        controller.error(
+                            new Error("Upstream failed after early response")
+                        );
+                        currentReader.releaseLock();
+                        return;
+                    }
                     cleanup(true);
                     controller.close();
                     currentReader?.releaseLock();

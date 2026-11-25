@@ -4,6 +4,7 @@ import {
     createEarlyKeepaliveResponse,
     createKeepaliveResponse,
 } from "@/proxy/stream.js";
+import { firstData, readUntilEnd } from "./helpers-stream.js";
 
 afterEach(() => vi.useRealTimers());
 const decode = (bytes: Uint8Array | undefined) =>
@@ -42,31 +43,40 @@ test("sends initial comment and heartbeats while upstream headers are pending", 
 });
 
 test.each([
-    [() => Promise.reject(new Error("secret")), "UPSTREAM_REQUEST_FAILED"],
+    [() => Promise.reject(new Error("secret")), "UPSTREAM_REQUEST_FAILED", 502],
     [
         () => Promise.resolve(new Response("secret", { status: 429 })),
         "UPSTREAM_HTTP_ERROR",
+        429,
     ],
-    [() => Promise.resolve(new Response("secret")), "UPSTREAM_NOT_SSE"],
-])("encodes early failure as a sanitized SSE error", async (load, code) => {
-    const first = vi.fn<(ms: number) => void>();
-    const finish = vi.fn<(timing: unknown) => void>();
-    const response = createEarlyKeepaliveResponse(
-        load,
-        new AbortController(),
-        100,
-        finish,
-        first
-    );
-    const text = await response.text();
-    expect(text).toContain("event: error\n");
-    expect(text).toContain(code);
-    expect(text.includes("secret")).toBe(code === "UPSTREAM_HTTP_ERROR");
-    expect(first).not.toHaveBeenCalled();
-    expect(finish).toHaveBeenCalledWith(
-        expect.objectContaining({ firstByteMs: null, completed: true })
-    );
-});
+    [() => Promise.resolve(new Response("secret")), "UPSTREAM_NOT_SSE", 502],
+])(
+    "encodes early failure as a Gemini-style error and ends the stream abnormally",
+    async (load, proxyCode, code) => {
+        const first = vi.fn<(ms: number) => void>();
+        const finish = vi.fn<(timing: unknown) => void>();
+        const response = createEarlyKeepaliveResponse(
+            load,
+            new AbortController(),
+            100,
+            finish,
+            first
+        );
+        const { text, error } = await readUntilEnd(response.body!);
+        expect(text).not.toContain("event:");
+        expect(
+            firstData<{ error: { code: number }; proxyCode: string }>(text)
+        ).toMatchObject({ error: { code }, proxyCode });
+        expect(text.includes("secret")).toBe(
+            proxyCode === "UPSTREAM_HTTP_ERROR"
+        );
+        expect(error).toBeInstanceOf(Error);
+        expect(first).not.toHaveBeenCalled();
+        expect(finish).toHaveBeenCalledWith(
+            expect.objectContaining({ firstByteMs: null, completed: false })
+        );
+    }
+);
 
 test("cancel during header wait aborts immediately and cancels a late body", async () => {
     vi.useFakeTimers();

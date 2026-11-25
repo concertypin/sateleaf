@@ -374,9 +374,13 @@ PDF 변환·업스트림 헤더 대기부터 보호하려면 `earlykeepalive`를
 `alt=sse` 또는 `Accept: text/event-stream`으로 SSE 요청임을 명시해야 하며 HEAD는 지원하지 않습니다.
 `nokeepalive`와 `earlykeepalive`는 함께 사용할 수 없습니다.
 선제 응답 후에는 업스트림 HTTP 상태·헤더를 클라이언트 응답에 반영할 수 없습니다.
-잘못된 본문, 크기 제한, 업스트림 HTTP 오류 또는 SSE가 아닌 응답은 SSE `error` 이벤트로 전달됩니다.
-HTTP 오류 이벤트는 원래 응답을 `upstreamBody`에 보존합니다(JSON이면 파싱한 값, 아니면 원문 텍스트).
-`contentType`과 `error.status`도 함께 전달하며, 오류 본문은 1 MiB까지 읽고 초과 시 `bodyTruncated`로 표시합니다.
+잘못된 본문, 크기 제한, 업스트림 HTTP 오류 또는 SSE가 아닌 응답은
+Gemini 형식 오류(`data: {"error":{"code","message","status"}}`, `event:` 줄 없음)로 전달한 뒤
+응답을 정상 종료하지 않고 비정상 종료합니다. 클라이언트는 빈 성공 응답이 아니라 실패한 스트림으로 인식합니다.
+`error.code`는 HTTP 상태, `error.status`는 Google 상태 문자열(업스트림 오류에 있으면 그 값)이며,
+`proxyCode`는 프록시 오류 유형입니다.
+HTTP 오류 데이터는 원래 응답을 `upstreamBody`에 보존합니다(JSON이면 파싱한 값, 아니면 원문 텍스트).
+`contentType`도 함께 전달하며, 오류 본문은 1 MiB까지 읽고 초과 시 `bodyTruncated`로 표시합니다.
 본문 읽기 실패 시 받은 부분을 보존하고 `bodyReadFailed`와 `bodyTruncated`로 표시합니다.
 공급자의 상세 오류 메시지와 재시도 정보는 `upstreamBody`에서 확인할 수 있습니다.
 keepalive는 모델 응답을 앞당기지 않으며, dyno 기동 전 대기나 이벤트 루프가 막힌 동안에는 전송할 수 없습니다.
