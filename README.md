@@ -302,10 +302,15 @@ After authenticating the URL and validating settings, this mode sends HTTP 200
 and an SSE keepalive before starting preparation. Declare SSE using `alt=sse` or
 `Accept: text/event-stream`; HEAD is excluded. `nokeepalive` and `earlykeepalive`
 cannot be combined. Upstream status and headers cannot replace the early response.
-Invalid bodies, size limits, upstream HTTP errors, and non-SSE responses become
-SSE `error` events. For HTTP errors, the event preserves the upstream response in
-`upstreamBody` (parsed JSON or original text), alongside `contentType` and the
-HTTP status in `error.status`. Error bodies are limited to 1 MiB; `bodyTruncated`
+Invalid bodies, size limits, upstream HTTP errors, and non-SSE responses are sent
+as a Gemini-style error (`data: {"error":{"code","message","status"}}`, with no
+`event:` line), after which the response is terminated abnormally instead of
+closing cleanly, so clients see a failed stream rather than an empty success.
+`error.code` is the HTTP status, `error.status` the Google status (taken from the
+upstream error when present), and `proxyCode` identifies the proxy failure class.
+For HTTP errors the data also preserves the upstream response in
+`upstreamBody` (parsed JSON or original text), alongside `contentType`.
+Error bodies are limited to 1 MiB; `bodyTruncated`
 marks a partial body; `bodyReadFailed` indicates a failure while reading it.
 Clients should inspect `upstreamBody` for provider error
 messages and retry details. Keepalive does not accelerate model output or cover dyno startup
@@ -323,7 +328,7 @@ These logs exclude prompts, credentials, and request URLs.
 The response `Server-Timing` header exposes `prepare` (body reading and transformation),
 `transform` (PDF/cache transformation, when applicable), and `upstream_headers` in
 milliseconds. `transform` is included in `prepare`; do not add them together.
-On the Node HTTP server, successful stream completion also sends a `Server-Timing`
+On the Node HTTP server, successful stream completion (not failed early responses) also sends a `Server-Timing`
 trailer with `upstream_body_wait` (first upstream chunk wait after headers),
 `first_upstream_byte` (handler start to first actual upstream chunk), and `stream` (whole
 body processing duration). Browser DevTools can display these trailers, while

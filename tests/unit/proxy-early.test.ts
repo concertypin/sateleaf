@@ -12,6 +12,7 @@ import { afterEach, assert, beforeEach, test, vi } from "vitest";
 import { createProxyHandler } from "@/proxy/index.js";
 import { transformGemini } from "@/transform/index.js";
 import type * as Transform from "@/transform/index.js";
+import { firstData, readUntilEnd } from "./helpers-stream.js";
 
 vi.mock("@/transform/index.js", async (importOriginal) => ({
     ...(await importOriginal<typeof Transform>()),
@@ -123,19 +124,23 @@ test.each([
 );
 
 test.each([
-    ["{", undefined, 400],
-    ["too large", "2", 413],
+    ["{", undefined, 400, "INVALID_ARGUMENT"],
+    ["too large", "2", 413, "RESOURCE_EXHAUSTED"],
 ])(
     "reports body errors through SSE after committing 200",
-    async (body, limit, status) => {
+    async (body, limit, status, googleStatus) => {
         if (limit) vi.stubEnv("MAX_REQUEST_BYTES", limit);
         const fetch = vi.fn<typeof globalThis.fetch>();
         vi.stubGlobal("fetch", fetch);
         const response = await app().request(path, { method: "POST", body });
         assert.equal(response.status, 200);
-        const text = await response.text();
-        assert.include(text, "event: error\n");
-        assert.include(text, String(status));
+        const { text } = await readUntilEnd(response.body!);
+        assert.notInclude(text, "event:");
+        const { error } = firstData<{
+            error: { code: number; status: string };
+        }>(text);
+        assert.equal(error.code, status);
+        assert.equal(error.status, googleStatus);
         assert.equal(fetch.mock.calls.length, 0);
     }
 );
@@ -162,16 +167,15 @@ test("preserves Gemini error details after committing an early HTTP 200", async 
     );
     const response = await app().request(path);
     assert.equal(response.status, 200);
-    const text = await response.text();
-    const data = text.split("\n").find((line) => line.startsWith("data: "));
-    assert.isDefined(data);
-    const payload: unknown = JSON.parse(data.slice(6));
-    assert.deepEqual(payload, {
+    const { text, error } = await readUntilEnd(response.body!);
+    assert.instanceOf(error, Error);
+    assert.deepEqual(firstData(text), {
         error: {
-            code: "UPSTREAM_HTTP_ERROR",
-            message: "Upstream returned an error",
-            status: 429,
+            code: 429,
+            message: "Quota exceeded",
+            status: "RESOURCE_EXHAUSTED",
         },
+        proxyCode: "UPSTREAM_HTTP_ERROR",
         upstreamBody,
         contentType: "application/json",
     });
@@ -184,8 +188,7 @@ test("does not expose local fetch exception details in the preserved error body"
         vi.fn(() => Promise.reject(new Error("secret-provider-key")))
     );
     const response = await app().request(path);
-    const text = await response.text();
-    assert.include(text, "event: error\n");
+    const { text } = await readUntilEnd(response.body!);
     assert.include(text, "Upstream request failed");
     assert.notInclude(text, "secret-provider-key");
 });
@@ -358,6 +361,63 @@ test("publishes HTTP headers and heartbeat before upstream headers resolve", asy
             response.trailers["server-timing"] ?? "",
             /first_upstream_byte;dur=\d+\.\d{2}/
         );
+    } finally {
+        client.destroy();
+        await new Promise<void>((resolve, reject) =>
+            server.close((error) => (error ? reject(error) : resolve()))
+        );
+    }
+});
+
+test("delivers the Gemini-style error over real HTTP, then aborts the response", async () => {
+    vi.stubGlobal(
+        "fetch",
+        vi.fn(() =>
+            Promise.resolve(
+                Response.json(
+                    {
+                        error: {
+                            code: 503,
+                            message: "busy",
+                            status: "UNAVAILABLE",
+                        },
+                    },
+                    { status: 503 }
+                )
+            )
+        )
+    );
+    const server = serve({
+        fetch: app().fetch,
+        hostname: "127.0.0.1",
+        port: 0,
+        overrideGlobalObjects: false,
+    });
+    await once(server, "listening");
+    const address = server.address();
+    if (!address || typeof address === "string")
+        throw new Error("Expected TCP address");
+    const client = get(`http://127.0.0.1:${address.port}${path}`);
+    try {
+        const response = await new Promise<IncomingMessage>(
+            (resolve, reject) => {
+                client.once("response", resolve);
+                client.once("error", reject);
+            }
+        );
+        assert.equal(response.statusCode, 200);
+        let received = "";
+        response.on("data", (chunk: Buffer) => {
+            received += chunk.toString();
+        });
+        const outcome = await new Promise<string>((resolve) => {
+            response.once("end", () => resolve("end"));
+            response.once("error", () => resolve("error"));
+            response.once("close", () => resolve("close"));
+        });
+        assert.include(received, '"status":"UNAVAILABLE"');
+        assert.notEqual(outcome, "end");
+        assert.isFalse(response.complete);
     } finally {
         client.destroy();
         await new Promise<void>((resolve, reject) =>
